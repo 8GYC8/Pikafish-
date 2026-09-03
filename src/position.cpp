@@ -697,6 +697,21 @@ void Position::do_move(Move                      m,
     st->checkersBB = givesCheck ? checkers_to(us, king_square(them)) : Bitboard(0);
     assert(givesCheck == bool(checkers_to(us, king_square(them))));
 
+    st->chased = st->checking = st->chasing = 0;
+
+    // SkyRule and YitianRule also keep the uninterrupted checking count for each side.
+    if (Rules::sky_rule() || Rules::yitian_rule())
+    {
+        if (captured)
+            st->consecutiveChecks[WHITE] = st->consecutiveChecks[BLACK] = 0;
+        else if (givesCheck)
+            ++st->consecutiveChecks[us];
+        else
+            st->consecutiveChecks[us] = 0;
+    }
+    else
+        st->consecutiveChecks[WHITE] = st->consecutiveChecks[BLACK] = 0;
+
     sideToMove = ~sideToMove;
 
     // Update king attacks used for fast check detection
@@ -1233,6 +1248,218 @@ u16 Position::chased(Color c) {
 }
 
 
+// A chase is identified by both the victim and the attacking piece.  Keeping the
+// pair (rather than only the victim) is required by the platform-rule variants.
+struct Position::ChaseMap {
+    std::array<u64, 4> attacks{};
+
+    void add(int victim, int attacker) {
+        assert(0 <= victim && victim < 16);
+        assert(0 <= attacker && attacker < 16);
+        const int bit = victim * 16 + attacker;
+        attacks[bit >> 6] |= 1ULL << (bit & 63);
+    }
+
+    ChaseMap without(const ChaseMap& rhs) const {
+        ChaseMap result;
+        for (int i = 0; i < 4; ++i)
+            result.attacks[i] = attacks[i] & ~rhs.attacks[i];
+        return result;
+    }
+
+    u16 victim_mask() const {
+        u16 result = 0;
+        for (int victim = 0; victim < 16; ++victim)
+        {
+            const int word  = victim >> 2;
+            const int shift = (victim & 3) * 16;
+            if ((attacks[word] >> shift) & 0xFFFF)
+                result |= u16(1U << victim);
+        }
+        return result;
+    }
+
+    u16 attacker_mask() const {
+        u16 result = 0;
+        for (u64 word : attacks)
+            result |= u16(word) | u16(word >> 16) | u16(word >> 32) | u16(word >> 48);
+        return result;
+    }
+};
+
+
+// Calculates victim/attacker chase pairs for a given color.  This follows the
+// chase test used by the executable's Asian-family rule path.
+Position::ChaseMap Position::chased_map(Color c) {
+
+    ChaseMap chase;
+
+    std::swap(c, sideToMove);
+
+    // King and pawn are permitted to chase perpetually.
+    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
+    while (attackers)
+    {
+        const Square    from         = pop_lsb(attackers);
+        const PieceType attackerType = type_of(piece_on(from));
+        Bitboard        attacks      = attacks_bb(attackerType, from, pieces());
+
+        if (blockers_for_king(sideToMove) & from)
+            attacks &= pinners(~sideToMove) & ~pieces(KING);
+        else
+            attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
+                     | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
+
+        Bitboard candidates = 0;
+        if (attackerType == KNIGHT || attackerType == CANNON)
+            candidates = attacks & pieces(~sideToMove, ROOK);
+        if (Rules::chinese_rule() && (attackerType == ADVISOR || attackerType == BISHOP))
+            candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
+
+        attacks ^= candidates;
+        while (candidates)
+        {
+            const Square to = pop_lsb(candidates);
+            if (chase_legal(Move(from, to)))
+                chase.add(idBoard[to], idBoard[from]);
+        }
+
+        while (attacks)
+        {
+            const Square to = pop_lsb(attacks);
+            const Move   m(from, to);
+
+            if (!chase_legal(m))
+                continue;
+
+            bool                   trueChase = true;
+            const auto [captured, id]        = do_move(m);
+            Bitboard               recaptures = attackers_to(to) & pieces(sideToMove);
+            while (recaptures)
+            {
+                const Square s = pop_lsb(recaptures);
+                if (chase_legal(Move(s, to)))
+                {
+                    trueChase = false;
+                    break;
+                }
+            }
+            undo_move(m, captured, id);
+
+            if (!trueChase)
+                continue;
+
+            // Exclude mutual/symmetric attacks except pins.
+            if (attackerType == type_of(piece_on(to)))
+            {
+                sideToMove = ~sideToMove;
+                if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
+                    || !chase_legal(Move(to, from)))
+                    chase.add(idBoard[to], idBoard[from]);
+                sideToMove = ~sideToMove;
+            }
+            else
+                chase.add(idBoard[to], idBoard[from]);
+        }
+    }
+
+    std::swap(c, sideToMove);
+    return chase;
+}
+
+
+// Calculates whether the side not on move has a forced checking mate within the
+// configured depth.  ChineseRule treats such a mate threat like a chase.
+bool Position::has_mate_threat(int d) {
+
+    if (Rules::sky_rule() || Rules::mateThreatDepth == 0)
+        return false;
+
+    if (d == -1)
+    {
+        StateInfo nullSt;
+        do_null_move(nullSt);
+        const bool mateThreat = has_mate_threat(0);
+        undo_null_move();
+        return mateThreat;
+    }
+
+    if (d >= Rules::mateThreatDepth)
+        return false;
+
+    StateInfo tempSt[2];
+    for (const Move check : MoveList<LEGAL>(*this))
+    {
+        if (!gives_check(check))
+            continue;
+
+        do_move(check, tempSt[0]);
+        bool solvable = false;
+        for (const Move evasion : MoveList<LEGAL>(*this))
+        {
+            do_move(evasion, tempSt[1]);
+            solvable = !has_mate_threat(d + 1);
+            undo_move(evasion);
+            if (solvable)
+                break;
+        }
+        undo_move(check);
+
+        if (!solvable)
+            return true;
+    }
+
+    return false;
+}
+
+
+// Annotates the last d states with chase/check identities while rolling a copy
+// of the position backwards.  StateInfo itself belongs to the real move chain,
+// so the annotations remain available to the adjudicator after the rollback.
+void Position::set_chase_info(int d, bool skipMateThreat) {
+
+    int ids[COLOR_NB] = {0, 0};
+    for (Square s = SQ_A0; s <= SQ_I9; ++s)
+        if (board[s] != NO_PIECE)
+            idBoard[s] = ids[color_of(board[s])]++;
+
+    d = std::min(d, st->pliesFromNull + 1);
+    for (int i = 0; i < d && st->previous; ++i)
+    {
+        StateInfo* movedState = st;
+        movedState->chased = movedState->checking = movedState->chasing = 0;
+
+        if ((Rules::sky_rule() || Rules::yitian_rule()) && movedState->checkersBB)
+        {
+            Bitboard checkers = movedState->checkersBB;
+            while (checkers)
+                movedState->checking |= u16(1U << idBoard[pop_lsb(checkers)]);
+        }
+
+        if (movedState->checkersBB
+            || (Rules::chinese_rule() && !skipMateThreat && has_mate_threat()))
+        {
+            if (Rules::chinese_or_sky())
+                movedState->chased = 0xFFFF;
+
+            undo_move(movedState->move, movedState->capturedPiece);
+            st = st->previous;
+            continue;
+        }
+
+        const ChaseMap after = chased_map(~sideToMove);
+        undo_move(movedState->move, movedState->capturedPiece);
+        st = st->previous;
+        const ChaseMap difference = after.without(chased_map(sideToMove));
+
+        movedState->chased  = difference.victim_mask();
+        movedState->chasing = difference.attacker_mask();
+        if (Rules::chinese_rule() && movedState->chased)
+            movedState->chased = 0xFFFF;
+    }
+}
+
+
 // Detects chases from state st - d to state st
 Value Position::detect_chases(int d, int ply) {
 
@@ -1273,14 +1500,16 @@ Value Position::detect_chases(int d, int ply) {
 }
 
 
-// Tests whether the position may end the game by rule 60, insufficient material, draw repetition,
-// perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
-bool Position::rule_judge(Value& result, int ply) {
+// ComputerRule is the strict threefold implementation: rule 60, insufficient
+// material, draw/perpetual repetition that allows a player to claim a result.
+bool Position::rule_judge_computer(Value& result, int ply) {
 
     // Restore rule 60 by adding back the checks
-    int end = std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
-                         + std::max(0, st->check10[BLACK] - 10),
-                       st->pliesFromNull);
+    int end = Rules::sixtyMoveRule
+              ? std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
+                           + std::max(0, st->check10[BLACK] - 10),
+                         st->pliesFromNull)
+              : st->pliesFromNull;
 
     if (end >= 4 && filter[st->key] >= 1)
     {
@@ -1319,7 +1548,8 @@ bool Position::rule_judge(Value& result, int ply) {
                 if (filter[st->key] <= 1)
                 {
                     // Not exceeding rule 60 and have the same previous step
-                    if (st->rule60 < 120 && st->previous->key == stp->previous->key)
+                    if ((!Rules::sixtyMoveRule || st->rule60 < Rules::rule60MaxPly)
+                        && st->previous->key == stp->previous->key)
                     {
                         // Even if we entering this loop again, it will not lead to a 3 fold repetition
                         StateInfo* prev = st->previous;
@@ -1340,7 +1570,7 @@ bool Position::rule_judge(Value& result, int ply) {
     }
 
     // 60 move rule
-    if (st->rule60 >= 120)
+    if (Rules::sixtyMoveRule && st->rule60 >= Rules::rule60MaxPly)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         return true;
@@ -1415,6 +1645,190 @@ bool Position::rule_judge(Value& result, int ply) {
     }
 
     return false;
+}
+
+
+// AsianRule and its platform variants use twofold repetition and the richer
+// victim/attacker chase information recovered above.
+bool Position::rule_judge_asian(Value& result, int ply) {
+
+    int end = st->pliesFromNull;
+    if (Rules::sixtyMoveRule)
+        end = std::min(st->rule60 + 2 * std::max(0, st->check10[WHITE] - 10)
+                         + 2 * std::max(0, st->check10[BLACK] - 10),
+                       st->pliesFromNull);
+    else
+        st->rule60 = 0;
+
+    auto repetition_draw = [&]() {
+        result = VALUE_DRAW;
+        if (Rules::drawRule == Rules::DrawRule::DRAW_REP_AS_BLACK_WIN)
+            result = sideToMove == BLACK ? mate_in(ply) : mated_in(ply);
+        else if (Rules::drawRule == Rules::DrawRule::DRAW_REP_AS_RED_WIN)
+            result = sideToMove == WHITE ? mate_in(ply) : mated_in(ply);
+        return true;
+    };
+
+    // The platform variants cap uninterrupted checking before a full position
+    // cycle can otherwise be claimed.
+    if ((Rules::sky_rule() || Rules::yitian_rule()) && end >= 12)
+    {
+        const bool whiteChecks = st->consecutiveChecks[WHITE] >= 7;
+        const bool blackChecks = st->consecutiveChecks[BLACK] >= 7;
+        if (whiteChecks || blackChecks)
+        {
+            if (whiteChecks == blackChecks)
+                return repetition_draw();
+            const Color offender = whiteChecks ? WHITE : BLACK;
+            result = offender == sideToMove ? mated_in(ply) : mate_in(ply);
+            return true;
+        }
+    }
+
+    if (end >= 4 && filter[st->key] >= 1)
+    {
+        StateInfo* stp = st->previous->previous;
+        bool       checkThem = st->checkersBB && stp->checkersBB;
+        bool       checkUs   = st->previous->checkersBB && stp->previous->checkersBB;
+
+        for (int i = 4; i <= end; i += 2)
+        {
+            stp = stp->previous->previous;
+            checkThem &= bool(stp->checkersBB);
+
+            if (stp->key == st->key)
+            {
+                // A continuous check has precedence over all forms of chase.
+                if (checkThem || checkUs)
+                {
+                    if (checkThem == checkUs)
+                        return repetition_draw();
+                    result = checkThem ? mate_in(ply) : mated_in(ply);
+                    return true;
+                }
+
+                if (Rules::allow_chase())
+                    return repetition_draw();
+
+                Position rollback;
+                std::memcpy(static_cast<void*>(&rollback), static_cast<const void*>(this),
+                            offsetof(Position, filter));
+                rollback.set_chase_info(i);
+
+                u16       violations[COLOR_NB] = {0xFFFF, 0xFFFF};
+                Color     mover                = ~sideToMove;
+                StateInfo* cursor              = st;
+                for (int n = 0; n < i; ++n)
+                {
+                    violations[mover] &= cursor->chased;
+                    mover  = ~mover;
+                    cursor = cursor->previous;
+                }
+
+                const bool usViolates   = bool(violations[sideToMove]);
+                const bool themViolates = bool(violations[~sideToMove]);
+                if (usViolates == themViolates)
+                    return repetition_draw();
+
+                result = usViolates ? mated_in(ply) : mate_in(ply);
+                return true;
+            }
+
+            if (i + 1 <= end)
+                checkUs &= bool(stp->previous->checkersBB);
+        }
+    }
+
+    if (Rules::sixtyMoveRule && st->rule60 >= Rules::rule60MaxPly)
+    {
+        result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
+        return true;
+    }
+
+    // Draw by insufficient material. Keep this identical to ComputerRule.
+    if (count<PAWN>() == 0)
+    {
+        enum DrawLevel : int {
+            NO_DRAW,
+            DIRECT_DRAW,
+            MATE_DRAW
+        };
+
+        int level = [&]() {
+            if (!major_material())
+                return DIRECT_DRAW;
+
+            if (major_material() == CannonValue)
+            {
+                Color cannonSide = major_material(WHITE) == CannonValue ? WHITE : BLACK;
+                if (count<ADVISOR>(cannonSide) == 0)
+                {
+                    if (count<ADVISOR>(~cannonSide) == 0)
+                        return DIRECT_DRAW;
+                    if (count<ADVISOR>(~cannonSide) == 1)
+                        return count<BISHOP>(cannonSide) == 0 ? DIRECT_DRAW : MATE_DRAW;
+                    if (count<BISHOP>(cannonSide) == 0)
+                        return MATE_DRAW;
+                }
+            }
+
+            if (major_material(WHITE) == CannonValue && major_material(BLACK) == CannonValue
+                && count<ADVISOR>() == 0)
+                return count<BISHOP>() == 0 ? DIRECT_DRAW : MATE_DRAW;
+
+            return NO_DRAW;
+        }();
+
+        if (level != NO_DRAW)
+        {
+            if (level == MATE_DRAW)
+            {
+                MoveList<LEGAL> moves(*this);
+                if (moves.size() == 0)
+                {
+                    result = mated_in(ply);
+                    return true;
+                }
+                for (const Move move : moves)
+                {
+                    StateInfo tempSt;
+                    do_move(move, tempSt);
+                    const bool mate = MoveList<LEGAL>(*this).size() == 0;
+                    undo_move(move);
+                    if (mate)
+                        return false;
+                }
+            }
+            result = VALUE_DRAW;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+// Public adjudication entry: select the recovered rule family, then apply the
+// two result-remapping modes shared by the executable.
+bool Position::rule_judge(Value& result, int ply) {
+
+    const bool judged = Rules::computer_rule() ? rule_judge_computer(result, ply)
+                                               : rule_judge_asian(result, ply);
+    if (!judged)
+        return false;
+
+    if (Rules::no_judgement())
+        result = VALUE_DRAW;
+
+    if (result == VALUE_DRAW)
+    {
+        if (Rules::drawRule == Rules::DrawRule::DRAW_AS_BLACK_WIN)
+            result = sideToMove == BLACK ? mate_in(ply) : mated_in(ply);
+        else if (Rules::drawRule == Rules::DrawRule::DRAW_AS_RED_WIN)
+            result = sideToMove == WHITE ? mate_in(ply) : mated_in(ply);
+    }
+
+    return true;
 }
 
 

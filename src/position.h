@@ -21,6 +21,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <iosfwd>
@@ -35,6 +36,7 @@
 #include "bitboard.h"
 #include "misc.h"
 #include "nnue/features/half_ka_v2_hm.h"
+#include "rules.h"
 #include "types.h"
 
 namespace Stockfish {
@@ -56,6 +58,7 @@ struct StateInfo {
     i16   check10[COLOR_NB];
     int   rule60;
     int   pliesFromNull;
+    i16   consecutiveChecks[COLOR_NB];
 
     // Not copied when making a move (will be recomputed anyhow)
     Key        key;
@@ -66,6 +69,9 @@ struct StateInfo {
     Bitboard   checkSquares[PIECE_TYPE_NB];
     bool       needFullCheck;
     Piece      capturedPiece;
+    u16        chased;
+    u16        checking;
+    u16        chasing;
     Move       move;
 };
 
@@ -194,6 +200,12 @@ class Position {
     std::pair<Piece, int> do_move(Move m);
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
+    struct ChaseMap;
+    ChaseMap chased_map(Color c);
+    void     set_chase_info(int d, bool skipMateThreat = false);
+    bool     has_mate_threat(int d = -1);
+    bool     rule_judge_asian(Value& result, int ply);
+    bool     rule_judge_computer(Value& result, int ply);
     bool                  chase_legal(Move m) const;
     template<bool AfterMove = false>
     Key adjust_key60(Key k) const;
@@ -294,7 +306,8 @@ inline Key Position::key() const { return adjust_key60(st->key); }
 
 template<bool AfterMove>
 inline Key Position::adjust_key60(Key k) const {
-    return (st->rule60 < (14 - AfterMove) ? k : k ^ make_key((st->rule60 - (14 - AfterMove)) / 8))
+    const int r60 = Rules::sixtyMoveRule ? st->rule60 : 0;
+    return (r60 < (14 - AfterMove) ? k : k ^ make_key((r60 - (14 - AfterMove)) / 8))
          ^ (filter[k] ? make_key(14) : 0);
 }
 
@@ -312,7 +325,7 @@ inline Value Position::major_material() const {
 
 inline int Position::game_ply() const { return gamePly; }
 
-inline int Position::rule60_count() const { return st->rule60; }
+inline int Position::rule60_count() const { return Rules::sixtyMoveRule ? st->rule60 : 0; }
 
 inline bool Position::capture(Move m) const {
     assert(m.is_ok());

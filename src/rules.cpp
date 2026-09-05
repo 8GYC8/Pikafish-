@@ -11,8 +11,8 @@ namespace Stockfish::Rules {
 
 RepetitionRule repetitionRule = RepetitionRule::YITIAN;
 DrawRule       drawRule       = DrawRule::NONE;
-bool           sixtyMoveRule = false;
-int            rule60MaxPly  = 134;
+bool           sixtyMoveRule = true;
+int            rule60MaxPly  = 120;
 int            mateThreatDepth = 10;
 
 }  // namespace Stockfish::Rules

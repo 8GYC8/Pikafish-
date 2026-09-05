@@ -3,7 +3,7 @@ name: Pikafish
 on:
   push:
     branches:
-      - 8GYC8-YTPK
+      - 8GYC8-YGPK
 
 jobs:
   Pikafish-x86-64:

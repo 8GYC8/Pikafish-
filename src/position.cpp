@@ -199,15 +199,12 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     if (rank != RANK_0 || file != FILE_NB)
         return PositionSetError("Invalid FEN. Board state encoding ended but cursor not at end.");
 
-    if (count<KING>(WHITE) != 1 || count<KING>(BLACK) != 1)
-        return PositionSetError("Unsupported position. Incorrect number of kings.");
-
     const std::string PieceTypeToStr[PIECE_TYPE_NB] = {"",     "rook",   "advisor", "cannon",
                                                        "pawn", "knight", "bishop",  "king"};
-    constexpr int     MaxPieces[PIECE_TYPE_NB - 1]  = {0, 2, 2, 2, 5, 2, 2};
+    constexpr int     MaxPieces[PIECE_TYPE_NB]      = {0, 2, 2, 2, 5, 2, 2, 1};
     for (Color c : {WHITE, BLACK})
     {
-        for (PieceType pt = ROOK; pt < KING; ++pt)
+        for (PieceType pt = ROOK; pt <= KING; ++pt)
             if (popcount(pieces(c, pt)) > MaxPieces[pt])
                 return PositionSetError(std::string("Unsupported position. ")
                                         + (c == WHITE ? "WHITE " : "BLACK ") + "has more than "
@@ -1248,7 +1245,46 @@ u16 Position::chased(Color c) {
 }
 
 
-// A chase is identified by both the victim and the attacking piece.  Keeping the
+// Detects chases from state st - d to state st
+Value Position::detect_chases(int d, int ply) {
+
+    // Grant each piece on board a unique id for each side
+    int whiteId = 0;
+    int blackId = 0;
+    for (Square s = SQ_A0; s <= SQ_I9; ++s)
+        if (board[s] != NO_PIECE)
+            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
+
+    Color us = sideToMove, them = ~us;
+
+    // Rollback until we reached st - d
+    u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
+    for (int i = 0; i < d; ++i)
+    {
+        if (st->checkersBB)
+            return VALUE_DRAW;
+        else if (!chase[~sideToMove])
+        {
+            if (!chase[sideToMove])
+                break;
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
+        }
+        else
+        {
+            u16 after = chased(~sideToMove);
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
+            // Take the exact diff to detect the chase
+            chase[sideToMove] &= after & ~chased(sideToMove);
+        }
+    }
+
+    return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? mated_in(ply) : mate_in(ply)
+                                               : VALUE_DRAW;
+}
+
+
 // pair (rather than only the victim) is required by the platform-rule variants.
 struct Position::ChaseMap {
     std::array<u64, 4> attacks{};
@@ -1460,194 +1496,6 @@ void Position::set_chase_info(int d, bool skipMateThreat) {
 }
 
 
-// Detects chases from state st - d to state st
-Value Position::detect_chases(int d, int ply) {
-
-    // Grant each piece on board a unique id for each side
-    int whiteId = 0;
-    int blackId = 0;
-    for (Square s = SQ_A0; s <= SQ_I9; ++s)
-        if (board[s] != NO_PIECE)
-            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
-
-    Color us = sideToMove, them = ~us;
-
-    // Rollback until we reached st - d
-    u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
-    for (int i = 0; i < d; ++i)
-    {
-        if (st->checkersBB)
-            return VALUE_DRAW;
-        else if (!chase[~sideToMove])
-        {
-            if (!chase[sideToMove])
-                break;
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-        }
-        else
-        {
-            u16 after = chased(~sideToMove);
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-            // Take the exact diff to detect the chase
-            chase[sideToMove] &= after & ~chased(sideToMove);
-        }
-    }
-
-    return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? mated_in(ply) : mate_in(ply)
-                                               : VALUE_DRAW;
-}
-
-
-// ComputerRule is the strict threefold implementation: rule 60, insufficient
-// material, draw/perpetual repetition that allows a player to claim a result.
-bool Position::rule_judge_computer(Value& result, int ply) {
-
-    // Restore rule 60 by adding back the checks
-    int end = Rules::sixtyMoveRule
-              ? std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
-                           + std::max(0, st->check10[BLACK] - 10),
-                         st->pliesFromNull)
-              : st->pliesFromNull;
-
-    if (end >= 4 && filter[st->key] >= 1)
-    {
-        int        cnt       = 0;
-        StateInfo* stp       = st->previous->previous;
-        bool       checkThem = st->checkersBB && stp->checkersBB;
-        bool       checkUs   = st->previous->checkersBB && stp->previous->checkersBB;
-
-        for (int i = 4; i <= end; i += 2)
-        {
-            stp = stp->previous->previous;
-            checkThem &= bool(stp->checkersBB);
-
-            // Return a score if a position repeats once earlier but strictly
-            // after the root, or repeats twice before or at the root.
-            if (stp->key == st->key && (++cnt == 2 || ply > i))
-            {
-                if (!checkThem && !checkUs)
-                {
-                    // Copy the current position to a rollback struct, so we don't need to do those moves again
-                    Position rollback;
-                    memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
-
-                    // Chasing detection
-                    result = rollback.detect_chases(i, ply);
-                }
-                else
-                    // Checking detection
-                    result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
-
-                // 3 folds and 2 fold draws can be judged immediately
-                if (result == VALUE_DRAW || cnt == 2)
-                    return true;
-
-                // 2 fold mates need further investigations
-                if (filter[st->key] <= 1)
-                {
-                    // Not exceeding rule 60 and have the same previous step
-                    if ((!Rules::sixtyMoveRule || st->rule60 < Rules::rule60MaxPly)
-                        && st->previous->key == stp->previous->key)
-                    {
-                        // Even if we entering this loop again, it will not lead to a 3 fold repetition
-                        StateInfo* prev = st->previous;
-                        while ((prev = prev->previous) != stp)
-                            if (filter[prev->key] > 1)
-                                break;
-                        if (prev == stp)
-                            return true;
-                    }
-                    // We know there can't be another fold
-                    break;
-                }
-            }
-
-            if (i + 1 <= end)
-                checkUs &= bool(stp->previous->checkersBB);
-        }
-    }
-
-    // 60 move rule
-    if (Rules::sixtyMoveRule && st->rule60 >= Rules::rule60MaxPly)
-    {
-        result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
-        return true;
-    }
-
-    // Draw by insufficient material
-    if (count<PAWN>() == 0)
-    {
-        enum DrawLevel : int {
-            NO_DRAW,      // There is no drawing situation exists
-            DIRECT_DRAW,  // A draw can be directly yielded without any checks
-            MATE_DRAW     // We need to check for mate before yielding a draw
-        };
-
-        int level = [&]() {
-            // No cannons left on the board
-            if (!major_material())
-                return DIRECT_DRAW;
-
-            // One cannon left on the board
-            if (major_material() == CannonValue)
-            {
-                // See which side is holding this cannon, and this side must not possess any advisors
-                Color cannonSide = major_material(WHITE) == CannonValue ? WHITE : BLACK;
-                if (count<ADVISOR>(cannonSide) == 0)
-                {
-                    // No advisors left on the board
-                    if (count<ADVISOR>(~cannonSide) == 0)
-                        return DIRECT_DRAW;
-
-                    // One advisor left on the board
-                    if (count<ADVISOR>(~cannonSide) == 1)
-                        return count<BISHOP>(cannonSide) == 0 ? DIRECT_DRAW : MATE_DRAW;
-
-                    // Two advisors left on the board
-                    if (count<BISHOP>(cannonSide) == 0)
-                        return MATE_DRAW;
-                }
-            }
-
-            // Two cannons left on the board, one for each side, and no advisors left on the board
-            if (major_material(WHITE) == CannonValue && major_material(BLACK) == CannonValue
-                && count<ADVISOR>() == 0)
-                return count<BISHOP>() == 0 ? DIRECT_DRAW : MATE_DRAW;
-
-            return NO_DRAW;
-        }();
-
-        if (level != NO_DRAW)
-        {
-            if (level == MATE_DRAW)
-            {
-                MoveList<LEGAL> moves(*this);
-                if (moves.size() == 0)
-                {
-                    result = mated_in(ply);
-                    return true;
-                }
-                for (const auto& move : moves)
-                {
-                    StateInfo tempSt;
-                    do_move(move, tempSt);
-                    bool mate = MoveList<LEGAL>(*this).size() == 0;
-                    undo_move(move);
-                    if (mate)
-                        return false;
-                }
-            }
-            result = VALUE_DRAW;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
 // AsianRule and its platform variants use twofold repetition and the richer
 // victim/attacker chase information recovered above.
 bool Position::rule_judge_asian(Value& result, int ply) {
@@ -1794,6 +1642,154 @@ bool Position::rule_judge_asian(Value& result, int ply) {
                     StateInfo tempSt;
                     do_move(move, tempSt);
                     const bool mate = MoveList<LEGAL>(*this).size() == 0;
+                    undo_move(move);
+                    if (mate)
+                        return false;
+                }
+            }
+            result = VALUE_DRAW;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+// ComputerRule is the strict threefold implementation retained from the source
+// tree supplied with this task.
+bool Position::rule_judge_computer(Value& result, int ply) {
+
+    // Restore rule 60 by adding back the checks
+    int end = Rules::sixtyMoveRule
+              ? std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
+                           + std::max(0, st->check10[BLACK] - 10),
+                         st->pliesFromNull)
+              : st->pliesFromNull;
+
+    if (end >= 4 && filter[st->key] >= 1)
+    {
+        int        cnt       = 0;
+        StateInfo* stp       = st->previous->previous;
+        bool       checkThem = st->checkersBB && stp->checkersBB;
+        bool       checkUs   = st->previous->checkersBB && stp->previous->checkersBB;
+
+        for (int i = 4; i <= end; i += 2)
+        {
+            stp = stp->previous->previous;
+            checkThem &= bool(stp->checkersBB);
+
+            // Return a score if a position repeats once earlier but strictly
+            // after the root, or repeats twice before or at the root.
+            if (stp->key == st->key && (++cnt == 2 || ply > i))
+            {
+                if (!checkThem && !checkUs)
+                {
+                    // Copy the current position to a rollback struct, so we don't need to do those moves again
+                    Position rollback;
+                    memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
+
+                    // Chasing detection
+                    result = rollback.detect_chases(i, ply);
+                }
+                else
+                    // Checking detection
+                    result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
+
+                // 3 folds and 2 fold draws can be judged immediately
+                if (result == VALUE_DRAW || cnt == 2)
+                    return true;
+
+                // 2 fold mates need further investigations
+                if (filter[st->key] <= 1)
+                {
+                    // Not exceeding rule 60 and have the same previous step
+                    if ((!Rules::sixtyMoveRule || st->rule60 < Rules::rule60MaxPly)
+                        && st->previous->key == stp->previous->key)
+                    {
+                        // Even if we entering this loop again, it will not lead to a 3 fold repetition
+                        StateInfo* prev = st->previous;
+                        while ((prev = prev->previous) != stp)
+                            if (filter[prev->key] > 1)
+                                break;
+                        if (prev == stp)
+                            return true;
+                    }
+                    // We know there can't be another fold
+                    break;
+                }
+            }
+
+            if (i + 1 <= end)
+                checkUs &= bool(stp->previous->checkersBB);
+        }
+    }
+
+    // 60 move rule
+    if (Rules::sixtyMoveRule && st->rule60 >= Rules::rule60MaxPly)
+    {
+        result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
+        return true;
+    }
+
+    // Draw by insufficient material
+    if (count<PAWN>() == 0)
+    {
+        enum DrawLevel : int {
+            NO_DRAW,      // There is no drawing situation exists
+            DIRECT_DRAW,  // A draw can be directly yielded without any checks
+            MATE_DRAW     // We need to check for mate before yielding a draw
+        };
+
+        int level = [&]() {
+            // No cannons left on the board
+            if (!major_material())
+                return DIRECT_DRAW;
+
+            // One cannon left on the board
+            if (major_material() == CannonValue)
+            {
+                // See which side is holding this cannon, and this side must not possess any advisors
+                Color cannonSide = major_material(WHITE) == CannonValue ? WHITE : BLACK;
+                if (count<ADVISOR>(cannonSide) == 0)
+                {
+                    // No advisors left on the board
+                    if (count<ADVISOR>(~cannonSide) == 0)
+                        return DIRECT_DRAW;
+
+                    // One advisor left on the board
+                    if (count<ADVISOR>(~cannonSide) == 1)
+                        return count<BISHOP>(cannonSide) == 0 ? DIRECT_DRAW : MATE_DRAW;
+
+                    // Two advisors left on the board
+                    if (count<BISHOP>(cannonSide) == 0)
+                        return MATE_DRAW;
+                }
+            }
+
+            // Two cannons left on the board, one for each side, and no advisors left on the board
+            if (major_material(WHITE) == CannonValue && major_material(BLACK) == CannonValue
+                && count<ADVISOR>() == 0)
+                return count<BISHOP>() == 0 ? DIRECT_DRAW : MATE_DRAW;
+
+            return NO_DRAW;
+        }();
+
+        if (level != NO_DRAW)
+        {
+            if (level == MATE_DRAW)
+            {
+                MoveList<LEGAL> moves(*this);
+                if (moves.size() == 0)
+                {
+                    result = mated_in(ply);
+                    return true;
+                }
+                for (const auto& move : moves)
+                {
+                    StateInfo tempSt;
+                    do_move(move, tempSt);
+                    bool mate = MoveList<LEGAL>(*this).size() == 0;
                     undo_move(move);
                     if (mate)
                         return false;

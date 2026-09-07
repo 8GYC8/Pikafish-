@@ -450,6 +450,12 @@ void UCIEngine::loop() {
         }
         else if (token == "position")
             position(is);
+        // Non-UCI extension ported from the "perfect Asian rule" reference:
+        // allow `fen <FEN>` and `startpos` as top-level commands (no `position`
+        // prefix needed). When `fen` is given without a FEN string, fall back
+        // to the default StartFEN.
+        else if (token == "fen" || token == "startpos")
+            is.seekg(0), position(is);
         else if (token == "ucinewgame")
             engine.search_clear();
         else if (token == "isready")
@@ -471,6 +477,11 @@ void UCIEngine::loop() {
             sync_cout << engine.visualize() << sync_endl;
         else if (token == "eval")
             engine.trace_eval();
+        else if (token == "rulecheck")
+        {
+            auto [terminal, value] = engine.debug_rule_check();
+            sync_cout << "rulecheck terminal " << int(terminal) << " value " << int(value) << sync_endl;
+        }
         else if (token == "compiler")
             sync_cout << compiler_info() << sync_endl;
         else if (token == "config")
@@ -819,14 +830,15 @@ void UCIEngine::position(std::istringstream& is) {
         is >> token;  // Consume the "moves" token, if any
     }
     else if (token == "fen")
+    {
         while (is >> token && token != "moves")
             fen += token + " ";
+        // Default FEN: when `fen` is given without a FEN string, use StartFEN.
+        if (fen.empty())
+            fen = StartFEN;
+    }
     else
-        fen = StartFEN;  // No FEN given: default to the standard FEN
-
-    // "position fen" without a FEN string also falls back to the default
-    if (fen.empty())
-        fen = StartFEN;
+        return;
 
     std::vector<std::string> moves;
 

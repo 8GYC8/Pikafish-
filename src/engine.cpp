@@ -114,8 +114,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Repetition Rule",
-      Option("YitianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
-             "YitianRule", [](const Option& o) {
+      Option("AsianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
+             "AsianRule", [this](const Option& o) {
                  using RR = RuleConfig::RepetitionRule;
 
                  RuleConfig::repetitionRule =
@@ -127,16 +127,26 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                    : o == "NoJudgement" ? RR::NO_JUDGEMENT
                                         : RR::ASIAN;
 
-                 // Rule60MaxPly couplings: AsianRule and SkyRule default to rule120,
-                 // YitianRule defaults to rule140.
+                 // Couplings for AsianRule, SkyRule and YitianRule:
+                 // all three default to rule120 (adjustable 90-150 through Rule60MaxPly),
+                 // and the Sixty Move Rule is switched on for AsianRule/SkyRule and
+                 // switched off for YitianRule. The coupled options are assigned through
+                 // the OptionsMap so that GUIs reflect the new defaults and the options'
+                 // own callbacks keep RuleConfig in sync.
                  if (RuleConfig::repetitionRule == RR::ASIAN
-                     || RuleConfig::repetitionRule == RR::SKY)
-                     RuleConfig::rule60MaxPly = 120;
-                 else if (RuleConfig::repetitionRule == RR::YITIAN)
-                     RuleConfig::rule60MaxPly = 140;
-                 // Sixty Move Rule is off by default for YitianRule.
-                 if (RuleConfig::repetitionRule == RR::YITIAN)
-                     RuleConfig::sixtyMoveRule = false;
+                     || RuleConfig::repetitionRule == RR::SKY
+                     || RuleConfig::repetitionRule == RR::YITIAN)
+                 {
+                     const bool sixtyMoveOn = RuleConfig::repetitionRule != RR::YITIAN;
+
+                     if (auto it = options.options_map.find("Rule60MaxPly");
+                         it != options.options_map.end())
+                         it->second = std::string("120");
+
+                     if (auto it = options.options_map.find("Sixty Move Rule");
+                         it != options.options_map.end())
+                         it->second = std::string(sixtyMoveOn ? "true" : "false");
+                 }
 
                  return std::nullopt;
              }));
@@ -156,20 +166,20 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
              }));
 
     options.add(  //
-      "Sixty Move Rule", Option(false, [](const Option& o) {
+      "Sixty Move Rule", Option(true, [](const Option& o) {
+          // The natural-move draw is unavailable under YitianRule; selecting
+          // AsianRule/SkyRule switches it on and YitianRule switches it off
+          // via the Repetition Rule coupling.
           RuleConfig::sixtyMoveRule =
             int(o) != 0 && RuleConfig::repetitionRule != RuleConfig::RepetitionRule::YITIAN;
           return std::nullopt;
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(140, 1, 150, [](const Option& o) {
-          using RR = RuleConfig::RepetitionRule;
-          // AsianRule and SkyRule are pinned to rule120.
-          RuleConfig::rule60MaxPly =
-            (RuleConfig::repetitionRule == RR::ASIAN || RuleConfig::repetitionRule == RR::SKY)
-              ? 120
-              : int(o);
+      "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
+          // Defaults to rule120 for AsianRule, SkyRule and YitianRule and is
+          // freely adjustable between 90 and 150 plies.
+          RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));
 

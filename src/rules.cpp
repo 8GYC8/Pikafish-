@@ -9,7 +9,7 @@
 
 namespace Stockfish::Rules {
 
-RepetitionRule repetitionRule = RepetitionRule::ASIAN;
+RepetitionRule repetitionRule = RepetitionRule::SKY;
 DrawRule       drawRule       = DrawRule::NONE;
 bool           sixtyMoveRule = true;
 int            rule60MaxPly  = 120;

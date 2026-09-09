@@ -128,6 +128,7 @@ struct Stack {
     bool                        followPV;
     int                         cutoffCnt;
     int                         reduction;
+    int                         priorNMPFailHigh;
 };
 
 

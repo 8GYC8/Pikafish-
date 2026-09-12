@@ -163,8 +163,9 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(140, 1, 150, [](const Option& o) {
+      "Rule60MaxPly", Option(140, 100, 160, [](const Option& o) {
           using RR = RuleConfig::RepetitionRule;
+          // Adjustable 100-160 (default rule140 for YitianRule).
           // AsianRule and SkyRule are pinned to rule120.
           RuleConfig::rule60MaxPly =
             (RuleConfig::repetitionRule == RR::ASIAN || RuleConfig::repetitionRule == RR::SKY)

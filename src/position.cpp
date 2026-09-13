@@ -49,8 +49,8 @@ using namespace Attacks;
 
 namespace RuleConfig {
 // Defaults: SkyRule with rule120, Sixty Move Rule on.
-// AsianRule and YitianRule also couple to rule120; selecting YitianRule switches
-// the Sixty Move Rule off (enforced in engine.cpp couplings).
+// AsianRule also couples to rule120; selecting YitianRule defaults to rule140
+// and switches the Sixty Move Rule off (enforced in engine.cpp couplings).
 RepetitionRule repetitionRule  = RepetitionRule::SKY;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;

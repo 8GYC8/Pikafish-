@@ -128,20 +128,22 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                                         : RR::ASIAN;
 
                  // Couplings for AsianRule, SkyRule and YitianRule:
-                 // all three default to rule120 (adjustable 90-150 through Rule60MaxPly),
-                 // and the Sixty Move Rule is switched on for AsianRule/SkyRule and
-                 // switched off for YitianRule. The coupled options are assigned through
-                 // the OptionsMap so that GUIs reflect the new defaults and the options'
+                 // AsianRule and SkyRule default to rule120, YitianRule defaults
+                 // to rule140 (adjustable 100-160 through Rule60MaxPly). The Sixty
+                 // Move Rule is switched on for AsianRule/SkyRule and switched off
+                 // for YitianRule. The coupled options are assigned through the
+                 // OptionsMap so that GUIs reflect the new defaults and the options'
                  // own callbacks keep RuleConfig in sync.
                  if (RuleConfig::repetitionRule == RR::ASIAN
                      || RuleConfig::repetitionRule == RR::SKY
                      || RuleConfig::repetitionRule == RR::YITIAN)
                  {
-                     const bool sixtyMoveOn = RuleConfig::repetitionRule != RR::YITIAN;
+                     const bool  sixtyMoveOn = RuleConfig::repetitionRule != RR::YITIAN;
+                     const char* rule60Default = sixtyMoveOn ? "120" : "140";
 
                      if (auto it = options.options_map.find("Rule60MaxPly");
                          it != options.options_map.end())
-                         it->second = std::string("120");
+                         it->second = std::string(rule60Default);
 
                      if (auto it = options.options_map.find("Sixty Move Rule");
                          it != options.options_map.end())
@@ -176,9 +178,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
-          // Defaults to rule120 for AsianRule, SkyRule and YitianRule and is
-          // freely adjustable between 90 and 150 plies.
+      "Rule60MaxPly", Option(120, 100, 160, [](const Option& o) {
+          // Defaults to rule120 for AsianRule/SkyRule and rule140 for YitianRule
+          // (set via the Repetition Rule coupling); freely adjustable between
+          // 100 and 160 plies.
           RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));

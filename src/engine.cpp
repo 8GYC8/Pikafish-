@@ -128,9 +128,9 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                                         : RR::ASIAN;
 
                  // Couplings for AsianRule, SkyRule and YitianRule:
-                 // - AsianRule/SkyRule default to rule120 (adjustable 90-150 through
+                 // - AsianRule/SkyRule default to rule120 (adjustable 90-155 through
                  //   Rule60MaxPly) and the Sixty Move Rule is switched on.
-                 // - YitianRule defaults to rule140 (adjustable 100-160) and the
+                 // - YitianRule defaults to rule140 (adjustable 90-155) and the
                  //   Sixty Move Rule is switched off.
                  // The coupled options are assigned through the OptionsMap so that GUIs
                  // reflect the new defaults/ranges and the options' own callbacks keep
@@ -147,8 +147,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                      {
                          // Widen/restore the spin bounds before assigning the value,
                          // since Option::operator= rejects values outside min/max.
-                         it->second.min = yitian ? 100 : 90;
-                         it->second.max = yitian ? 160 : 150;
+                         it->second.min = 90;
+                         it->second.max = 155;
                          it->second     = std::string(yitian ? "140" : "120");
                      }
 
@@ -185,10 +185,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
+      "Rule60MaxPly", Option(120, 90, 155, [](const Option& o) {
           // Startup default is rule120 (default rule is AsianRule). The Repetition
-          // Rule coupling keeps rule120 with a 90-150 range for AsianRule/SkyRule,
-          // and switches to rule140 with a 100-160 range for YitianRule.
+          // Rule coupling keeps rule120 with a 90-155 range for AsianRule/SkyRule,
+          // and switches to rule140 with a 90-155 range for YitianRule.
           RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));

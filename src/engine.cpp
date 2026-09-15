@@ -127,16 +127,20 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                    : o == "NoJudgement" ? RR::NO_JUDGEMENT
                                         : RR::ASIAN;
 
-                 // Rule60MaxPly couplings: AsianRule and SkyRule default to rule120,
-                 // YitianRule defaults to rule140.
+                 // Rule60MaxPly and Sixty Move Rule couplings:
+                 // AsianRule and SkyRule default to rule120 with Sixty Move Rule on,
+                 // YitianRule defaults to rule140 with Sixty Move Rule off.
                  if (RuleConfig::repetitionRule == RR::ASIAN
                      || RuleConfig::repetitionRule == RR::SKY)
-                     RuleConfig::rule60MaxPly = 120;
+                 {
+                     RuleConfig::rule60MaxPly  = 120;
+                     RuleConfig::sixtyMoveRule = true;
+                 }
                  else if (RuleConfig::repetitionRule == RR::YITIAN)
-                     RuleConfig::rule60MaxPly = 140;
-                 // Sixty Move Rule is off by default for YitianRule.
-                 if (RuleConfig::repetitionRule == RR::YITIAN)
+                 {
+                     RuleConfig::rule60MaxPly  = 140;
                      RuleConfig::sixtyMoveRule = false;
+                 }
 
                  return std::nullopt;
              }));
@@ -163,14 +167,9 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(140, 100, 160, [](const Option& o) {
-          using RR = RuleConfig::RepetitionRule;
-          // Adjustable 100-160 (default rule140 for YitianRule).
-          // AsianRule and SkyRule are pinned to rule120.
-          RuleConfig::rule60MaxPly =
-            (RuleConfig::repetitionRule == RR::ASIAN || RuleConfig::repetitionRule == RR::SKY)
-              ? 120
-              : int(o);
+      "Rule60MaxPly", Option(140, 90, 155, [](const Option& o) {
+          // Adjustable 90-155 (default rule120 for AsianRule/SkyRule, rule140 for YitianRule).
+          RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));
 

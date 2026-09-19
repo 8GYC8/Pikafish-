@@ -210,6 +210,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 
     if (rank != RANK_0 || file != FILE_NB)
         return PositionSetError("Invalid FEN. Board state encoding ended but cursor not at end.");
+
     if (count<KING>(WHITE) != 1 || count<KING>(BLACK) != 1)
         return PositionSetError("Unsupported position. Incorrect number of kings.");
 
@@ -1918,35 +1919,42 @@ bool Position::rule_judge(Value& result, int ply) {
         return true;
     }
 
-    // Draw by insufficient material.
+    // Draw by insufficient material
     if (count<PAWN>() == 0)
     {
         enum DrawLevel : int {
-            NO_DRAW,
-            DIRECT_DRAW,
-            MATE_DRAW
+            NO_DRAW,      // There is no drawing situation exists
+            DIRECT_DRAW,  // A draw can be directly yielded without any checks
+            MATE_DRAW     // We need to check for mate before yielding a draw
         };
 
         int level = [&]() {
+            // No cannons left on the board
             if (!major_material())
                 return DIRECT_DRAW;
 
+            // One cannon left on the board
             if (major_material() == CannonValue)
             {
+                // See which side is holding this cannon, and this side must not possess any advisors
                 Color cannonSide = major_material(WHITE) == CannonValue ? WHITE : BLACK;
                 if (count<ADVISOR>(cannonSide) == 0)
                 {
+                    // No advisors left on the board
                     if (count<ADVISOR>(~cannonSide) == 0)
                         return DIRECT_DRAW;
 
+                    // One advisor left on the board
                     if (count<ADVISOR>(~cannonSide) == 1)
                         return count<BISHOP>(cannonSide) == 0 ? DIRECT_DRAW : MATE_DRAW;
 
+                    // Two advisors left on the board
                     if (count<BISHOP>(cannonSide) == 0)
                         return MATE_DRAW;
                 }
             }
 
+            // Two cannons left on the board, one for each side, and no advisors left on the board
             if (major_material(WHITE) == CannonValue && major_material(BLACK) == CannonValue
                 && count<ADVISOR>() == 0)
                 return count<BISHOP>() == 0 ? DIRECT_DRAW : MATE_DRAW;
@@ -1975,7 +1983,6 @@ bool Position::rule_judge(Value& result, int ply) {
                 }
             }
             result = VALUE_DRAW;
-            apply_draw_rule(false);
             return true;
         }
     }
@@ -2007,7 +2014,7 @@ std::optional<PositionSetError> Position::flip() {
     f += token + " ";
 
     std::transform(f.begin(), f.end(), f.begin(),
-                   [](char c) { return char(islower(c) ? toupper(c) : tolower(c)); });
+                   [](unsigned char c) { return char(islower(c) ? toupper(c) : tolower(c)); });
 
     ss >> token;
     f += token;

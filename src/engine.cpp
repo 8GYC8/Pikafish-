@@ -56,7 +56,7 @@ constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
 Engine::Engine(std::optional<std::filesystem::path> path) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
     states(new std::deque<StateInfo>(1)),
     threads(),
     networkFile{std::nullopt, ""},
@@ -71,7 +71,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "NumaPolicy", Option("hardware", [this](const Option& o) {
+      "NumaPolicy", Option("auto", [this](const Option& o) {
           if (!set_numa_config_from_option(o))
               return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
           return numa_config_information_as_string() + "\n"
@@ -384,13 +384,6 @@ const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 
 std::string Engine::fen() const { return pos.fen(); }
-
-std::pair<bool, Value> Engine::debug_rule_check() {
-    Value result = VALUE_NONE;
-    bool terminal = pos.rule_judge(result, 0);
-    return {terminal, result};
-}
-
 
 std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
 

@@ -36,7 +36,6 @@
 #include "numa.h"
 #include "perft.h"
 #include "position.h"
-#include "rules.h"
 #include "search.h"
 #include "shm.h"
 #include "types.h"
@@ -57,7 +56,7 @@ constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
 Engine::Engine(std::optional<std::filesystem::path> path) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
     states(new std::deque<StateInfo>(1)),
     threads(),
     networkFile{std::nullopt, ""},
@@ -66,24 +65,13 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     pos.set(StartFEN, &states->back());
 
     options.add(  //
-      "FEN", Option(StartFEN, [](const Option& o) {
-          defaultFen = std::string(o);
-          return std::nullopt;
-      }));
-
-    options.add(  //
       "Debug Log File", Option("", [](const Option& o) {
           start_logger(path_from_utf8(std::string(o)));
           return std::nullopt;
       }));
 
     options.add(  //
-      "Config File", Option("", [this](const Option& o) {
-          return options.load_config_file(path_from_utf8(std::string(o)));
-      }));
-
-    options.add(  //
-      "NumaPolicy", Option("auto", [this](const Option& o) {
+      "NumaPolicy", Option("hardware", [this](const Option& o) {
           if (!set_numa_config_from_option(o))
               return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
           return numa_config_information_as_string() + "\n"
@@ -120,59 +108,78 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
-          Rules::mateThreatDepth = int(o);
+          RuleConfig::mateThreatDepth = int(o);
           return std::nullopt;
       }));
 
     options.add(  //
       "Repetition Rule",
-      Option(
-        "AsianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var "
-        "AllowChase var NoJudgement",
-        "AsianRule", [](const Option& o) {
-            Rules::repetitionRule =
-              o == "ChineseRule"  ? Rules::RepetitionRule::CHINESE
-              : o == "SkyRule"    ? Rules::RepetitionRule::SKY
-              : o == "ComputerRule" ? Rules::RepetitionRule::COMPUTER
-              : o == "YitianRule" ? Rules::RepetitionRule::YITIAN
-              : o == "AllowChase" ? Rules::RepetitionRule::ALLOW_CHASE
-              : o == "NoJudgement" ? Rules::RepetitionRule::NO_JUDGEMENT
-                                    : Rules::RepetitionRule::ASIAN;
+      Option("AsianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
+             "AsianRule", [this](const Option& o) {
+                 using RR = RuleConfig::RepetitionRule;
 
-            // Rule60MaxPly coupling: SkyRule is pinned to 120. AsianRule and
-            // YitianRule keep the Rule60MaxPly value (default 120, adjustable
-            // 90-150 via the Rule60MaxPly option or the config file).
-            if (Rules::sky_rule())
-                Rules::rule60MaxPly = 120;
-            return std::nullopt;
-        }));
+                 RuleConfig::repetitionRule =
+                   o == "ChineseRule"  ? RR::CHINESE
+                   : o == "SkyRule"    ? RR::SKY
+                   : o == "ComputerRule" ? RR::COMPUTER
+                   : o == "YitianRule" ? RR::YITIAN
+                   : o == "AllowChase" ? RR::ALLOW_CHASE
+                   : o == "NoJudgement" ? RR::NO_JUDGEMENT
+                                        : RR::ASIAN;
+
+                 // Couplings for AsianRule, SkyRule and YitianRule:
+                 // AsianRule and SkyRule default to rule120, YitianRule defaults to
+                 // rule140 (both adjustable 90-150 through Rule60MaxPly), and the
+                 // Sixty Move Rule is switched on for all three. The coupled options
+                 // are assigned through the OptionsMap so that GUIs reflect the new
+                 // defaults and the options' own callbacks keep RuleConfig in sync.
+                 if (RuleConfig::repetitionRule == RR::ASIAN
+                     || RuleConfig::repetitionRule == RR::SKY
+                     || RuleConfig::repetitionRule == RR::YITIAN)
+                 {
+                     const char* rule60Default =
+                       RuleConfig::repetitionRule == RR::YITIAN ? "140" : "120";
+
+                     if (auto it = options.options_map.find("Rule60MaxPly");
+                         it != options.options_map.end())
+                         it->second = std::string(rule60Default);
+
+                     if (auto it = options.options_map.find("Sixty Move Rule");
+                         it != options.options_map.end())
+                         it->second = std::string("true");
+                 }
+
+                 return std::nullopt;
+             }));
 
     options.add(  //
       "Draw Rule",
-      Option(
-        "None var None var DrawAsBlackWin var DrawAsRedWin var DrawRepAsBlackWin var "
-        "DrawRepAsRedWin",
-        "None", [](const Option& o) {
-            Rules::drawRule =
-              o == "DrawAsBlackWin"      ? Rules::DrawRule::DRAW_AS_BLACK_WIN
-              : o == "DrawAsRedWin"      ? Rules::DrawRule::DRAW_AS_RED_WIN
-              : o == "DrawRepAsBlackWin" ? Rules::DrawRule::DRAW_REP_AS_BLACK_WIN
-              : o == "DrawRepAsRedWin"   ? Rules::DrawRule::DRAW_REP_AS_RED_WIN
-                                           : Rules::DrawRule::NONE;
-            return std::nullopt;
-        }));
+      Option("None var None var DrawAsBlackWin var DrawAsRedWin var DrawRepAsBlackWin var DrawRepAsRedWin",
+             "None", [](const Option& o) {
+                 using DR = RuleConfig::DrawRule;
+                 RuleConfig::drawRule =
+                   o == "DrawAsBlackWin"      ? DR::BLACK_WIN
+                   : o == "DrawAsRedWin"      ? DR::RED_WIN
+                   : o == "DrawRepAsBlackWin" ? DR::REP_BLACK_WIN
+                   : o == "DrawRepAsRedWin"   ? DR::REP_RED_WIN
+                                               : DR::NONE;
+                 return std::nullopt;
+             }));
 
     options.add(  //
-      "Sixty Move Rule", Option(false, [](const Option& o) {
-          Rules::sixtyMoveRule = int(o);
+      "Sixty Move Rule", Option(true, [](const Option& o) {
+          // The natural-move draw is available under every repetition rule;
+          // AsianRule/SkyRule/YitianRule all switch it on via the Repetition
+          // Rule coupling.
+          RuleConfig::sixtyMoveRule = int(o) != 0;
           return std::nullopt;
       }));
 
     options.add(  //
       "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
-          // SkyRule is pinned to 120 (not adjustable); AsianRule and
-          // YitianRule are adjustable in the 90-150 range.
-          Rules::rule60MaxPly = Rules::sky_rule() ? 120 : int(o);
+          // Defaults to rule120 for AsianRule/SkyRule and rule140 for YitianRule,
+          // freely adjustable between 90 and 150 plies.
+          RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));
 
@@ -377,6 +384,13 @@ const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 
 std::string Engine::fen() const { return pos.fen(); }
+
+std::pair<bool, Value> Engine::debug_rule_check() {
+    Value result = VALUE_NONE;
+    bool terminal = pos.rule_judge(result, 0);
+    return {terminal, result};
+}
+
 
 std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
 

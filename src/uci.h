@@ -37,6 +37,10 @@ using Value = int;
 
 constexpr auto StartFEN = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1";
 
+// Configurable default FEN used by the "position startpos" command.
+// Mirrors StartFEN until the "FEN" UCI option overrides it. Access needs no lock.
+inline std::string defaultFen = StartFEN;
+
 class UCIEngine {
    public:
     UCIEngine(CommandLine cli);

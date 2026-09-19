@@ -77,10 +77,7 @@ void OptionsMap::add(const std::string& name, const Option& option) {
         options_map[name].idx    = insert_order++;
     }
     else
-    {
         std::cerr << "Option \"" << name << "\" was already added!" << std::endl;
-        std::exit(EXIT_FAILURE);
-    }
 }
 
 

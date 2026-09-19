@@ -20,10 +20,8 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <cstdlib>
 #include <iomanip>
-#include <iostream>
 #include <memory>
 #include <sstream>
 
@@ -60,7 +58,9 @@ Value Eval::evaluate(const Eval::NNUE::Network&     network,
     int v        = nnue + (nnue * i64(material) + optimism * i64(13268)) / 36139;
 
     // Damp down the evaluation linearly when shuffling
-    v -= (v * pos.rule60_count()) / 253;
+    // Keep the tuned rule120 damping profile relative to the rule60 horizon
+    // (253 corresponds to a 120-ply horizon; scale proportionally otherwise).
+    v -= (v * pos.rule60_count()) / (253 * Rules::rule60MaxPly / 120);
 
     // Guarantee evaluation does not hit the mate range
     v = std::clamp(v, VALUE_MATED_IN_MAX_PLY + 1, VALUE_MATE_IN_MAX_PLY - 1);

@@ -45,12 +45,12 @@ namespace Stockfish {
 
 // Constructor launches the thread and waits until it goes to sleep
 // in idle_loop(). Note that 'searching' and 'exit' should be already set.
-Thread::Thread(Search::SharedState&                    sharedState,
+Thread::Thread(Search::SharedState&                   sharedState,
                std::unique_ptr<Search::ISearchManager> sm,
-               usize                                   n,
-               usize                                   numaN,
-               usize                                   totalNumaCount,
-               OptionalThreadToNumaNodeBinder          binder) :
+               usize                                  n,
+               usize                                  numaN,
+               usize                                  totalNumaCount,
+               OptionalThreadToNumaNodeBinder         binder) :
     idx(n),
     idxInNuma(numaN),
     totalNuma(totalNumaCount),

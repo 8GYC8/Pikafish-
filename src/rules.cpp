@@ -11,7 +11,7 @@ namespace Stockfish::Rules {
 
 RepetitionRule repetitionRule = RepetitionRule::ASIAN;
 DrawRule       drawRule       = DrawRule::NONE;
-bool           sixtyMoveRule = true;
+bool           sixtyMoveRule = false;
 int            rule60MaxPly  = 120;
 int            mateThreatDepth = 10;
 

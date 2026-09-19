@@ -19,7 +19,6 @@
 #ifndef UCIOPTION_H_INCLUDED
 #define UCIOPTION_H_INCLUDED
 
-#include <filesystem>
 #include <functional>
 #include <iosfwd>
 #include <map>
@@ -83,10 +82,6 @@ class OptionsMap {
     void add_info_listener(InfoListener&&);
 
     void setoption(std::istringstream&);
-
-    // Applies UCI options from an external config file. Returns a status
-    // message for the info string channel, or nullopt if no file was given.
-    std::optional<std::string> load_config_file(const std::filesystem::path& file);
 
     const Option& operator[](const std::string&) const;
 

@@ -23,7 +23,9 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -63,6 +65,93 @@ const Option& OptionsMap::operator[](const std::string& name) const {
     auto it = options_map.find(name);
     assert(it != options_map.end());
     return it->second;
+}
+
+// Applies UCI options from an external config file (pikafish.toml). Accepted
+// line formats:
+//   - blank lines and comments starting with '#', ';' or '//'
+//   - full UCI command: "setoption name <Name> value <Value>"
+//   - shorthand:        "<Name> = <Value>" or "<Name> <Value>", with optional
+//     TOML-style quotes around the name and/or the value
+// Returns a status message for the info string channel, or nullopt if the
+// given file name is empty.
+std::optional<std::string> OptionsMap::load_config_file(const std::filesystem::path& file) {
+
+    if (file.empty())
+        return std::nullopt;
+
+    std::ifstream infile(file);
+    if (!infile.is_open())
+        return "Config file not found: " + file.filename().string();
+
+    auto trim = [](const std::string& s) {
+        usize b = 0, e = s.size();
+        while (b < e && std::isspace(static_cast<unsigned char>(s[b])))
+            ++b;
+        while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1])))
+            --e;
+        return s.substr(b, e - b);
+    };
+    auto starts_with = [](const std::string& s, const char* prefix) {
+        return s.rfind(prefix, 0) == 0;
+    };
+    auto strip_quotes = [](const std::string& s) {
+        if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front())
+            return s.substr(1, s.size() - 2);
+        return s;
+    };
+
+    usize       applied = 0;
+    std::string line;
+    while (std::getline(infile, line))
+    {
+        // Strip a UTF-8 BOM and surrounding whitespace (trailing '\r' included).
+        if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF
+            && static_cast<unsigned char>(line[1]) == 0xBB
+            && static_cast<unsigned char>(line[2]) == 0xBF)
+            line.erase(0, 3);
+
+        line = trim(line);
+        if (line.empty() || starts_with(line, "#") || starts_with(line, ";")
+            || starts_with(line, "//"))
+            continue;
+
+        if (starts_with(line, "setoption"))
+        {
+            // Skip the "setoption" token itself; setoption() expects the
+            // stream to start at "name ...".
+            std::istringstream is(line.substr(sizeof("setoption") - 1));
+            setoption(is);
+            ++applied;
+            continue;
+        }
+
+        std::string name, value;
+        const usize eq = line.find('=');
+        if (eq != std::string::npos)
+        {
+            name  = trim(line.substr(0, eq));
+            value = trim(line.substr(eq + 1));
+        }
+        else
+        {
+            const usize sep = line.find_first_of(" \t");
+            name            = trim(line.substr(0, sep));
+            value           = sep == std::string::npos ? "" : trim(line.substr(sep + 1));
+        }
+
+        if (name.empty() || value.empty())
+            continue;
+
+        name  = strip_quotes(name);
+        value = strip_quotes(value);
+
+        std::istringstream is("name " + name + " value " + value);
+        setoption(is);
+        ++applied;
+    }
+
+    return "Loaded " + std::to_string(applied) + " option(s) from " + file.filename().string();
 }
 
 // Inits options and assigns idx in the correct printing order
@@ -159,20 +248,17 @@ Option& Option::operator=(const std::string& v) {
 
     if (type == "combo")
     {
-        // defaultValue stores the complete UCI combo suffix, e.g.
-        // "AsianRule var AsianRule var ChineseRule ...".  Validate against
-        // the actual values while ignoring the repeated UCI "var" markers.
-        bool               found = false;
+        // The defaultValue string follows the UCI format
+        // "Default var A var B ...", so tokens repeat ("var" and the default
+        // value itself). Validate against a plain case-insensitive set:
+        // OptionsMap::add() aborts on duplicates and would terminate the
+        // engine, plus it would corrupt the global idx bookkeeping.
+        std::set<std::string, CaseInsensitiveLess> comboSet;
         std::string        token;
         std::istringstream ss(defaultValue);
         while (ss >> token)
-            if (token != "var" && !CaseInsensitiveLess()(token, v)
-                               && !CaseInsensitiveLess()(v, token))
-            {
-                found = true;
-                break;
-            }
-        if (!found || v == "var")
+            comboSet.insert(token);
+        if (!comboSet.count(v) || v == "var")
             return *this;
     }
 
@@ -200,29 +286,17 @@ std::ostream& operator<<(std::ostream& os, const OptionsMap& om) {
                 const Option& o = it.second;
                 os << "\noption name " << it.first << " type " << o.type;
 
-                // TOML is loaded before the GUI sends `uci`, so advertise the
-                // configured current value as this process' startup default. This makes
-                // GUIs reflect pikafish.toml instead of the compile-time defaults.
-                if (o.type == "check")
-                    os << " default " << o.currentValue;
-
-                else if (o.type == "combo")
-                {
-                    os << " default " << o.currentValue;
-                    // defaultValue also stores the supported `var ...` suffix.
-                    const auto vars = o.defaultValue.find(" var ");
-                    if (vars != std::string::npos)
-                        os << o.defaultValue.substr(vars);
-                }
+                if (o.type == "check" || o.type == "combo")
+                    os << " default " << o.defaultValue;
 
                 else if (o.type == "string")
                 {
-                    std::string currentValue = o.currentValue.empty() ? "<empty>" : o.currentValue;
-                    os << " default " << currentValue;
+                    std::string defaultValue = o.defaultValue.empty() ? "<empty>" : o.defaultValue;
+                    os << " default " << defaultValue;
                 }
 
                 else if (o.type == "spin")
-                    os << " default " << stoi(o.currentValue) << " min " << o.min << " max "
+                    os << " default " << stoi(o.defaultValue) << " min " << o.min << " max "
                        << o.max;
 
                 break;

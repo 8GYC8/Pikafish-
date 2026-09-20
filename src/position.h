@@ -70,6 +70,11 @@ inline bool chinese_like() {
     return repetitionRule == RepetitionRule::CHINESE || repetitionRule == RepetitionRule::SKY;
 }
 
+// SkyRule(天天象棋规则): switches on the proven position-based perpetual
+// check/chase classifier and its search couplings (no null move pruning,
+// root cycle judging, fixed +/-24999 violation score, 400-ply auto-draw).
+inline bool sky_rule() { return repetitionRule == RepetitionRule::SKY; }
+
 }  // namespace RuleConfig
 
 
@@ -250,6 +255,10 @@ class Position {
     // chasing the SAME victim across the repetition cycle. This is the core of
     // the "常捉无根子" detector shared by AsianRule, SkyRule and YitianRule.
     ChaseMap chased(Color c);
+    // SkyRule: same chase logic as chased() but keyed by POSITION (Bitboard).
+    // Used by the proven sky_judge_loop classifier so that two identical
+    // defenders alternately covering the same square count as a perpetual chase.
+    Bitboard chased_positions(Color c);
     bool  has_mate_threat(Depth d = -1);
     Value major_material(Color c) const;
     Value major_material() const;
@@ -276,6 +285,10 @@ class Position {
     std::pair<Piece, int> do_move(Move m);
     void                  undo_move(Move m, Piece captured, int id = 0);
     Value                 detect_chases(int d, int ply = 0);
+    // SkyRule(天天象棋规则): proven per-ply check/chase/idle loop classifier,
+    // keyed by position. Ported from the verified SkyRule-OK reference and used
+    // as the final verdict for RepetitionRule::SKY (see rule_judge).
+    Value                 sky_judge_loop(int loopLen, int ply = 0);
     void                  set_sky_info(int d);
     Value                 detect_sky_cycle(int d, int ply = 0);
     // The extra bitboard b masks out checkers that should be ignored (e.g. the

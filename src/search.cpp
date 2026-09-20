@@ -738,15 +738,30 @@ Value Search::Worker::search(
     if (PvNode && selDepth < ss->ply + 1)
         selDepth = ss->ply + 1;
 
-    if (!rootNode)
+    // Step 2. Check for aborted search or repetition
+    // SkyRule: rule_judge also runs at the root, so a cycle already present in the
+    // game history is detected (long check / long chase judged on the first repetition).
+    // The other rules keep their original behaviour of skipping rule_judge at the root.
+    if (!rootNode || RuleConfig::sky_rule())
     {
-        // Step 2. Check for aborted search or repetition
         Value result = VALUE_NONE;
-        if (pos.rule_judge(result, ss->ply))
+        bool  judged = pos.rule_judge(result, ss->ply);
+
+        // SkyRule: a fixed +/-24999 violation score at the root does not end the search
+        // at once - every root move is searched. The subtree repeating the offending
+        // cycle is again scored +/-24999, while a diversion is evaluated normally, so the
+        // side that must change automatically picks a diversion whenever one exists.
+        if (judged && !(rootNode && (result == Value(24999) || result == Value(-24999))))
             return result == VALUE_DRAW ? value_draw(nodes) : result;
-        if (result != VALUE_NONE)
+
+        if (!rootNode && result != VALUE_NONE)
         {
             assert(result != VALUE_DRAW);
+
+            // SkyRule: +/-24999 is a definite violation score; return it directly without
+            // the draw-window / mate-distance treatment.
+            if (result >= Value(24999) || result <= Value(-24999))
+                return result;
 
             // 2 fold result is mate for us, the only chance for the opponent is to get a draw
             // We can guarantee to get at least a draw score during searching for that line
@@ -758,18 +773,21 @@ Value Search::Worker::search(
                 beta = std::min(beta, VALUE_DRAW + 1);
         }
 
-        if (threads.stop.load(std::memory_order_relaxed) || ss->ply >= MAX_PLY)
-            return (ss->ply >= MAX_PLY && !ss->inCheck) ? evaluate(pos) : value_draw(nodes);
+        if (!rootNode)
+        {
+            if (threads.stop.load(std::memory_order_relaxed) || ss->ply >= MAX_PLY)
+                return (ss->ply >= MAX_PLY && !ss->inCheck) ? evaluate(pos) : value_draw(nodes);
 
-        // Step 3. Mate distance pruning. Even if we mate at the next move our score
-        // would be at best mate_in(ss->ply + 1), but if alpha is already bigger because
-        // a shorter mate was found upward in the tree then there is no need to search
-        // because we will never beat the current alpha. Equal and opposite logic applies
-        // when being mated. In either case, return a fail-high score.
-        alpha = std::max(mated_in(ss->ply), alpha);
-        beta  = std::min(mate_in(ss->ply + 1), beta);
-        if (alpha >= beta)
-            return alpha;
+            // Step 3. Mate distance pruning. Even if we mate at the next move our score
+            // would be at best mate_in(ss->ply + 1), but if alpha is already bigger because
+            // a shorter mate was found upward in the tree then there is no need to search
+            // because we will never beat the current alpha. Equal and opposite logic applies
+            // when being mated. In either case, return a fail-high score.
+            alpha = std::max(mated_in(ss->ply), alpha);
+            beta  = std::min(mate_in(ss->ply + 1), beta);
+            if (alpha >= beta)
+                return alpha;
+        }
     }
 
     assert(0 <= ss->ply && ss->ply < MAX_PLY);
@@ -927,7 +945,11 @@ Value Search::Worker::search(
     }
 
     // Step 10. Null move search with verification search
-    if (cutNode && ss->staticEval >= beta - 8 * depth - 50 * improving + 187 && !excludedMove
+    // SkyRule: null move pruning is disabled - doing a null move resets pliesFromNull,
+    // which would bound rule_judge's repetition window and truncate long-chase cycle
+    // detection (rule_judge scans rule60 directly when SkyRule is active).
+    if (cutNode && !RuleConfig::sky_rule()
+        && ss->staticEval >= beta - 8 * depth - 50 * improving + 187 && !excludedMove
         && pos.major_material(us) && ss->ply >= nmpMinPly && beta >= -2000)
     {
         assert((ss - 1)->currentMove != Move::null());
@@ -1602,6 +1624,11 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     if (result != VALUE_NONE)
     {
         assert(result != VALUE_DRAW);
+
+        // SkyRule: +/-24999 is a definite violation score; return it directly without
+        // the draw-window / mate-distance treatment.
+        if (result >= Value(24999) || result <= Value(-24999))
+            return result;
 
         // 2 fold result is mate for us, the only chance for the opponent is to get a draw
         // We can guarantee to get at least a draw score during searching for that line

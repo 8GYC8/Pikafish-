@@ -29,7 +29,13 @@ namespace Stockfish {
 Score::Score(Value v, const Position& pos) {
     assert(-VALUE_INFINITE < v && v < VALUE_INFINITE);
 
-    if (!is_decisive(v))
+    // SkyRule(天天象棋): +/-24999 is the fixed perpetual-violation score. Emit it as a
+    // raw centipawn integer without WDL scaling and without mate-distance conversion.
+    if (v == Value(24999) || v == Value(-24999))
+    {
+        score = InternalUnits{int(v)};
+    }
+    else if (!is_decisive(v))
     {
         score = InternalUnits{UCIEngine::to_cp(v, pos)};
     }

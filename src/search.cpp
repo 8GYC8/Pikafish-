@@ -880,6 +880,7 @@ Value Search::Worker::search(
                     if ((ttData.value >= beta) == (-ttDataNext.value >= beta))
                         return ttData.value;
                 }
+            }
         }
         // Case B: No cutoff, but depth was sufficient. Compare the aspiration window to the bound.
         else if (ttData.bound != BOUND_EXACT

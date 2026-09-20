@@ -1362,6 +1362,88 @@ ChaseMap Position::chased(Color c) {
 }
 
 
+// SkyRule: same chase logic as chased(), but returns the chased victim set keyed
+// by POSITION (Bitboard) instead of piece identity. The proven sky_judge_loop
+// classifier relies on this: when two identical defenders alternately cover the
+// same square, counting by position treats it as a continuous perpetual chase,
+// whereas identity tracking would wrongly call it a split chase.
+Bitboard Position::chased_positions(Color c) {
+
+    Bitboard chase = 0;
+
+    std::swap(c, sideToMove);
+
+    // King and pawn can legally perpetual chase.
+    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
+    while (attackers)
+    {
+        Square    from         = pop_lsb(attackers);
+        PieceType attackerType = type_of(piece_on(from));
+        Bitboard  attacks      = attacks_bb(attackerType, from, pieces());
+
+        // Restrict to pinners if pinned, otherwise exclude attacks on unpromoted pawns and checks.
+        if (blockers_for_king(sideToMove) & from)
+            attacks &= pinners(~sideToMove) & ~pieces(KING);
+        else
+            attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
+                     | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
+
+        while (attacks)
+        {
+            Square to = pop_lsb(attacks);
+            Move   m  = Move(from, to);
+
+            if (chase_legal(m))
+            {
+                // Attacks against stronger pieces.
+                if ((attackerType == KNIGHT || attackerType == CANNON)
+                    && type_of(piece_on(to)) == ROOK)
+                    chase |= square_bb(to);
+                else if ((attackerType == ADVISOR || attackerType == BISHOP)
+                         && type_of(piece_on(to)) & 1)
+                    chase |= square_bb(to);
+                // Attacks against potentially unprotected pieces.
+                else
+                {
+                    bool trueChase             = true;
+                    const auto& [captured, id] = do_move(m);
+                    Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
+                    while (recaptures)
+                    {
+                        Square s = pop_lsb(recaptures);
+                        if (chase_legal(Move(s, to)))
+                        {
+                            trueChase = false;
+                            break;
+                        }
+                    }
+                    undo_move(m, captured, id);
+
+                    if (trueChase)
+                    {
+                        // Exclude mutual/symmetric attacks except pins.
+                        if (attackerType == type_of(piece_on(to)))
+                        {
+                            sideToMove = ~sideToMove;
+                            if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
+                                || !chase_legal(Move(to, from)))
+                                chase |= square_bb(to);
+                            sideToMove = ~sideToMove;
+                        }
+                        else
+                            chase |= square_bb(to);
+                    }
+                }
+            }
+        }
+    }
+
+    std::swap(c, sideToMove);
+
+    return chase;
+}
+
+
 // Calculates whether the side to move has a forced checking mate threat within the configured depth.
 // This is used only by ChineseRule.
 bool Position::has_mate_threat(Depth d) {
@@ -1670,6 +1752,147 @@ Value Position::detect_sky_cycle(int d, int ply) {
 }
 
 
+// ============================================================================
+// SkyRule(天天象棋规则) 循环判定  (ported from the verified SkyRule-OK reference)
+// 逐着分析循环中每步的性质: 将(check) / 捉(chase) / 闲(idle)。
+// 关键: 用跨局面稳定的"位置身份"(posId)追踪被捉子, 从而区分
+//   - 步步捉同一个子(含该子来回逃, 车追移动炮) = 长捉同一子(禁止)
+//   - 步步捉但目标身份在变(一子分捉多子)       = 分捉(对方纯闲时允许)
+// 判负以固定的 +/-24999 分返回(非杀棋分, 不做杀棋距离/WDL 缩放)。
+// ============================================================================
+Value Position::sky_judge_loop(int loopLen, int ply) {
+
+    struct Agg {
+        int ck = 0, ch = 0, idle = 0;
+        uint32_t intersect = 0xFFFFFFFFu;  // 各捉步新捉身份的交集
+        uint32_t uni = 0;                  // 并集
+        uint32_t checkPiece = 0xFFFFFFFFu; // 将步将军子身份交集(单子将捉)
+    };
+    struct SI { Color mover; bool isCheck; uint32_t newIds; uint32_t checkId; };
+
+    // Work on a private rollback copy so the live position/StateInfo chain is
+    // never mutated by the loop classification.
+    Position rollback;
+    std::memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
+
+    const Color us   = sideToMove;
+    const Color them = ~us;
+
+    (void) ply;  // kept for signature parity; only used under SKY_DEBUG tracing
+
+    // 在循环终点建立 位置->稳定身份 映射
+    int posId[SQUARE_NB];
+    for (int i = 0; i < SQUARE_NB; ++i) posId[i] = -1;
+    int nextId = 0;
+    for (Square s = SQ_A0; s <= SQ_I9; ++s)
+        if (board[s] != NO_PIECE) posId[s] = nextId++;
+
+    auto toIds = [&](Bitboard bb) -> uint32_t {
+        uint32_t m = 0;
+        while (bb)
+        {
+            Square s = pop_lsb(bb);
+            if (posId[s] >= 0)
+                m |= (1u << posId[s]);
+        }
+        return m;
+    };
+
+    std::vector<SI> steps;
+    steps.reserve(loopLen);
+
+    for (int k = 0; k < loopLen; ++k)
+    {
+        StateInfo* cur   = rollback.st;          // 走后局面
+        Move       m     = cur->move;
+        Color      mover = ~rollback.side_to_move();
+        bool       isCheck = bool(cur->checkersBB);
+
+        // 走后 mover 方白吃(真捉)的对方子位置 -> 身份
+        Bitboard afterBB   = rollback.chased_positions(mover);
+        uint32_t afterIds = toIds(afterBB);
+
+        Square toSq   = m.to_sq(), fromSq = m.from_sq();
+        int    mid    = posId[toSq];
+        Piece  captured = cur->capturedPiece;
+        rollback.undo_move(m, captured);   // 轻量回退到走前
+        rollback.st = cur->previous;       // StateInfo 沿链回退
+        // 身份映射同步回退(重复循环内不吃子)
+        posId[toSq] = -1;
+        if (mid >= 0)
+            posId[fromSq] = mid;
+
+        // 走前 mover 方白吃的对方子位置 -> 身份
+        Bitboard beforeBB   = rollback.chased_positions(mover);
+        uint32_t beforeIds = toIds(beforeBB);
+        uint32_t newIds    = afterIds & ~beforeIds;  // 这步新产生的捉
+
+        steps.push_back({mover, isCheck, newIds,
+                         isCheck ? (uint32_t)(1u << posId[fromSq]) : 0u});
+    }
+    std::reverse(steps.begin(), steps.end());   // 转为时间顺序
+
+    Agg agg[COLOR_NB];
+    int half = loopLen / 2;
+    for (const SI& s : steps)
+    {
+        Agg& g = agg[s.mover];
+        if (s.isCheck)
+        {
+            g.ck++;
+            g.checkPiece &= s.checkId;   // 将军子身份交集
+        }
+        else if (s.newIds)
+        {
+            g.ch++;
+            g.intersect &= s.newIds;
+            g.uni |= s.newIds;
+        }
+        else
+            g.idle++;
+    }
+
+    auto longCheck   = [&](Color c) { return agg[c].ck == half; };
+    auto hitMix      = [&](Color c) { return agg[c].idle == 0 && agg[c].ck > 0 && agg[c].ch > 0; };
+    auto longChase   = [&](Color c) {
+        return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect != 0;
+    };
+    auto splitChase = [&](Color c) {
+        return agg[c].ck == 0 && agg[c].ch == half && agg[c].intersect == 0;
+    };
+    auto level = [&](Color c) {
+        return longCheck(c) ? 3 : hitMix(c) ? 2 : longChase(c) ? 1 : 0;
+    };
+
+    Value result = VALUE_DRAW;
+    Color loser  = COLOR_NB;
+
+    int lvUs = level(us), lvTh = level(them);
+
+    if (lvUs > lvTh)
+        loser = us;
+    else if (lvTh > lvUs)
+        loser = them;
+    else
+    {
+        // 同级(含双方均非长将长捉): 天天特例——分捉多子方遇对方将军(一将一闲)须变招
+        if (splitChase(us) && agg[them].ck > 0 && !longCheck(them))
+            loser = us;
+        else if (splitChase(them) && agg[us].ck > 0 && !longCheck(us))
+            loser = them;
+        else
+            result = VALUE_DRAW;  // 互长将/互长捉/双方允许: 和
+    }
+
+    if (loser == us)
+        result = Value(-24999);
+    else if (loser == them)
+        result = Value(24999);
+
+    return result;
+}
+
+
 // Detects chases from state st - d to state st.
 Value Position::detect_chases(int d, int ply) {
 
@@ -1832,9 +2055,14 @@ bool Position::rule_judge(Value& result, int ply) {
 
     // Restore rule 60 by adding back the checks. Captures/null moves still bound the
     // repetition history even when the natural-move draw itself is disabled.
-    int end = std::min(st->rule60 + std::max(0, st->check10[WHITE] - 10)
-                         + std::max(0, st->check10[BLACK] - 10),
-                       st->pliesFromNull);
+    //
+    // SkyRule(天天象棋): null move pruning is disabled for this rule, so pliesFromNull
+    // is not a reliable bound - scan the whole capture-free window (rule60 + checks).
+    // Every other rule still bounds the repetition history by pliesFromNull.
+    const bool sky            = RuleConfig::repetitionRule == RR::SKY;
+    const int  rule60Checks   = st->rule60 + std::max(0, st->check10[WHITE] - 10)
+                                         + std::max(0, st->check10[BLACK] - 10);
+    int        end            = sky ? rule60Checks : std::min(rule60Checks, st->pliesFromNull);
 
     if (end >= 4 && filter[st->key] >= 1)
     {
@@ -1857,18 +2085,29 @@ bool Position::rule_judge(Value& result, int ply) {
                 const bool legacyReady =
                   RuleConfig::repetitionRule != RR::COMPUTER && cnt >= 1;
 
-                if (computerReady || legacyReady)
+                if (sky || computerReady || legacyReady)
                 {
-                    if (RuleConfig::repetitionRule == RR::NO_JUDGEMENT)
+                    if (sky)
+                    {
+                        // SkyRule(天天象棋): a cycle that contains a check (连将杀/反击将)
+                        // takes the mate branch, so an accidental repetition of a forcing
+                        // checking line is not mistaken for a long-check loss. A pure,
+                        // non-checking cycle is classified per-ply by sky_judge_loop.
+                        if (checkThem || checkUs)
+                            result = !checkUs ? mate_in(ply)
+                                   : !checkThem ? mated_in(ply)
+                                                : VALUE_DRAW;
+                        else
+                            result = sky_judge_loop(i, ply);
+                    }
+                    else if (RuleConfig::repetitionRule == RR::NO_JUDGEMENT)
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
                         Position rollback;
                         memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
                         memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
-                        result = RuleConfig::repetitionRule == RR::SKY
-                               ? rollback.detect_sky_cycle(i, ply)
-                               : rollback.detect_chases(i, ply);
+                        result = rollback.detect_chases(i, ply);
                     }
                     else
                         result = !checkUs ? mate_in(ply)
@@ -1878,17 +2117,27 @@ bool Position::rule_judge(Value& result, int ply) {
                     const bool judgedDraw = result == VALUE_DRAW;
                     apply_draw_rule(true);
 
+                    // SkyRule: only the draw and the fixed +/-24999 violation scores are
+                    // final immediately. A mate score from a checking cycle still goes
+                    // through the false-mate investigation below.
+                    if (sky)
+                    {
+                        if (result == VALUE_DRAW || result == Value(24999)
+                            || result == Value(-24999))
+                            return true;
+                    }
                     // Legacy modes are 2-fold rules. ComputerRule preserves the stricter
                     // current Pikafish 3-fold/further-investigation behavior.
-                    if (RuleConfig::repetitionRule != RR::COMPUTER)
+                    else if (RuleConfig::repetitionRule != RR::COMPUTER)
                         return true;
 
-                    // 3 folds and 2-fold draws (including DrawRule-transformed draws)
-                    // can be judged immediately.
-                    if (judgedDraw || cnt == 2)
+                    // 3 folds and 2-fold draws (including DrawRule-transformed draws) can
+                    // be judged immediately. This does not apply to SkyRule, whose mate
+                    // score from a checking cycle keeps the false-mate investigation.
+                    if (!sky && (judgedDraw || cnt == 2))
                         return true;
 
-                    // Preserve the current ComputerRule false-mate safeguard.
+                    // False-mate safeguard: ComputerRule, and checking cycles under SkyRule.
                     if (filter[st->key] <= 1)
                     {
                         const int maxPly = std::max(1, RuleConfig::rule60MaxPly);
@@ -1915,6 +2164,14 @@ bool Position::rule_judge(Value& result, int ply) {
     // on for AsianRule/SkyRule and off for YitianRule (where it stays unavailable).
     if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
         && st->rule60 >= RuleConfig::rule60MaxPly)
+    {
+        result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
+        apply_draw_rule(false);
+        return true;
+    }
+
+    // SkyRule(天天象棋): once the game reaches 400 plies (200 moves) it is a draw.
+    if (sky && gamePly >= 400)
     {
         result = MoveList<LEGAL>(*this).size() ? VALUE_DRAW : mated_in(ply);
         apply_draw_rule(false);

@@ -879,9 +879,8 @@ Value Search::Worker::search(
 
         // Partial workaround for the graph history interaction problem
         // For high rule60 counts don't produce transposition table cutoffs.
-        // When the natural-move rule is disabled (rule60MaxPly == 0, e.g.
-        // under YitianRule) there is no high-counter region, so cutoffs are
-        // always allowed.
+        // When the natural-move rule is disabled (rule60MaxPly <= 0) there
+        // is no high-counter region, so cutoffs are always allowed.
         if (RuleConfig::rule60MaxPly <= 0 || pos.rule60_count() < RuleConfig::rule60MaxPly - 4)
         {
             if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move) && pos.legal(ttData.move)
@@ -1866,8 +1865,8 @@ Value value_from_tt(Value v, int ply, int r60c) {
 
     // Handle win
     if (is_win(v))
-        // Downgrade a potentially false mate score. With rule60MaxPly == 0 the
-        // natural-move rule is disabled (e.g. YitianRule), so no mate can be false.
+        // Downgrade a potentially false mate score. With rule60MaxPly <= 0 the
+        // natural-move rule is disabled, so no mate can be false.
         return RuleConfig::rule60MaxPly > 0
                    && VALUE_MATE - v > RuleConfig::rule60MaxPly - r60c
                  ? VALUE_MATE_IN_MAX_PLY - 1

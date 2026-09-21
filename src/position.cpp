@@ -49,9 +49,9 @@ using namespace Attacks;
 
 namespace RuleConfig {
 // Defaults: SkyRule with rule120, Sixty Move Rule on.
-// AsianRule also couples to rule120 (adjustable 90-155); selecting YitianRule
-// couples rule60MaxPly to 0 (rule140/natural-move rule disabled) and switches
-// the Sixty Move Rule off (enforced in engine.cpp couplings).
+// AsianRule also couples to rule120 (adjustable 90-150); selecting YitianRule
+// couples rule60MaxPly to rule140 (also adjustable 90-150) and keeps the
+// Sixty Move Rule switched on (enforced in engine.cpp couplings).
 RepetitionRule repetitionRule  = RepetitionRule::SKY;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;
@@ -257,8 +257,9 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
 
-    // A rule60MaxPly of 0 (e.g. under YitianRule) disables the natural-move
-    // rule, so any non-negative halfmove clock is accepted.
+    // A rule60MaxPly of 0 would disable the natural-move rule, in which case
+    // any non-negative halfmove clock is accepted (defensive; the adjustable
+    // range is 90-150 so this does not occur in normal configuration).
     if (st->rule60 < 0
         || (RuleConfig::rule60MaxPly > 0 && st->rule60 > RuleConfig::rule60MaxPly - 1))
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
@@ -2161,7 +2162,8 @@ bool Position::rule_judge(Value& result, int ply) {
     }
 
     // Configurable natural-move rule. The Repetition Rule callback switches this
-    // on for AsianRule/SkyRule and off for YitianRule (where it stays unavailable).
+    // on for AsianRule/SkyRule (rule120) and YitianRule (rule140); it can be
+    // toggled freely via the Sixty Move Rule option.
     if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
         && st->rule60 >= RuleConfig::rule60MaxPly)
     {

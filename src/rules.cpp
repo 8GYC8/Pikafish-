@@ -9,6 +9,10 @@
 
 namespace Stockfish::Rules {
 
+// Defaults: AsianRule with rule120, Sixty Move Rule on.
+// SkyRule also couples to rule120 (adjustable 90-150); YitianRule couples to
+// rule140 (also adjustable 90-150) with Sixty Move Rule on. See engine.cpp
+// for the active RuleConfig couplings (this namespace mirrors the defaults).
 RepetitionRule repetitionRule = RepetitionRule::ASIAN;
 DrawRule       drawRule       = DrawRule::NONE;
 bool           sixtyMoveRule = true;

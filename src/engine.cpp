@@ -128,29 +128,24 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                                         : RR::ASIAN;
 
                  // Couplings for AsianRule, SkyRule and YitianRule:
-                 // - AsianRule/SkyRule default to rule120 (adjustable 90-155 through
-                 //   Rule60MaxPly) and the Sixty Move Rule is switched on.
-                 // - YitianRule defaults to rule140 (adjustable 90-155) and the
-                 //   Sixty Move Rule is switched off.
-                 // The coupled options are assigned through the OptionsMap so that GUIs
-                 // reflect the new defaults/ranges and the options' own callbacks keep
-                 // RuleConfig in sync.
+                 // AsianRule and SkyRule default to rule120 (Rule60MaxPly is
+                 // adjustable 90-150), while YitianRule defaults to rule140
+                 // (Rule60MaxPly is also adjustable 90-150). The Sixty Move
+                 // Rule is switched on for all three rules. The coupled options
+                 // are assigned through the OptionsMap so that GUIs reflect the
+                 // new defaults and the options' own callbacks keep RuleConfig
+                 // in sync.
                  if (RuleConfig::repetitionRule == RR::ASIAN
                      || RuleConfig::repetitionRule == RR::SKY
                      || RuleConfig::repetitionRule == RR::YITIAN)
                  {
-                     const bool yitian      = RuleConfig::repetitionRule == RR::YITIAN;
-                     const bool sixtyMoveOn = !yitian;
+                     const bool  sixtyMoveOn = true;
+                     const char* rule60Default =
+                       RuleConfig::repetitionRule == RR::YITIAN ? "140" : "120";
 
                      if (auto it = options.options_map.find("Rule60MaxPly");
                          it != options.options_map.end())
-                     {
-                         // Widen/restore the spin bounds before assigning the value,
-                         // since Option::operator= rejects values outside min/max.
-                         it->second.min = 90;
-                         it->second.max = 155;
-                         it->second     = std::string(yitian ? "140" : "120");
-                     }
+                         it->second = std::string(rule60Default);
 
                      if (auto it = options.options_map.find("Sixty Move Rule");
                          it != options.options_map.end())
@@ -176,19 +171,17 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Sixty Move Rule", Option(true, [](const Option& o) {
-          // The natural-move draw is unavailable under YitianRule; selecting
-          // AsianRule/SkyRule switches it on and YitianRule switches it off
-          // via the Repetition Rule coupling.
-          RuleConfig::sixtyMoveRule =
-            int(o) != 0 && RuleConfig::repetitionRule != RuleConfig::RepetitionRule::YITIAN;
+          // The natural-move draw is available (and on by default) under
+          // AsianRule, SkyRule and YitianRule; the Repetition Rule coupling
+          // switches it on whenever one of those rules is selected.
+          RuleConfig::sixtyMoveRule = int(o) != 0;
           return std::nullopt;
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(120, 90, 155, [](const Option& o) {
-          // Startup default is rule120 (default rule is AsianRule). The Repetition
-          // Rule coupling keeps rule120 with a 90-155 range for AsianRule/SkyRule,
-          // and switches to rule140 with a 90-155 range for YitianRule.
+      "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
+          // Defaults to rule120 for AsianRule/SkyRule and rule140 for
+          // YitianRule; freely adjustable between 90 and 150 plies.
           RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));

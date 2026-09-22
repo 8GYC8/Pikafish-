@@ -115,8 +115,12 @@ void update_correction_history(const Position& pos,
     }
 }
 
-// Add a small random component to draw evaluations to avoid 3-fold blindness
-Value value_draw(usize nodes) { return VALUE_DRAW - 1 + Value(nodes & 0x2); }
+// Add a small random component to draw evaluations to avoid 3-fold blindness.
+// The bias is always slightly negative so that, when a non-draw line of similar
+// worth exists, the engine prefers it over a drawish perpetual-capture cycle
+// (常抓). The 2nd-bit parity is preserved to keep draws from collapsing to a
+// single value (which would re-introduce 3-fold blindness).
+Value value_draw(usize nodes) { return VALUE_DRAW - 2 - Value((nodes & 0x2) >> 1); }
 Value value_to_tt(Value v, int ply);
 Value value_from_tt(Value v, int ply, int r60c);
 void  update_continuation_histories(Stack* ss, Piece pc, Square to, int bonus);
@@ -842,54 +846,51 @@ Value Search::Worker::search(
         depth--;
 
     // Step 6. At non-PV nodes we check for an early TT cutoff
-    if (!PvNode && !excludedMove && is_valid(ttData.value)
-        && ttData.depth > depth - (ttData.value <= beta))
+    if (!PvNode && !excludedMove && ttData.depth > depth - (ttData.value <= beta)
+        && is_valid(ttData.value)  // Can happen when !ttHit or when access race in probe()
+        && (ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER))
+        && (cutNode == (ttData.value >= beta) || depth > 5))
     {
-        // Case A: TT entry can produce a cutoff
-        if ((ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER))
-            && (cutNode == (ttData.value >= beta) || depth > 5))
+        // If the ttMove is quiet, update move sorting heuristics on TT hit
+        if (ttData.move && ttData.value >= beta)
         {
-            // If the ttMove is quiet, update move sorting heuristics on TT hit
-            if (ttData.move && ttData.value >= beta)
-            {
-                // Bonus for a quiet ttMove that fails high
-                if (!ttCapture)
-                    update_quiet_histories(pos, ss, *this, ttData.move, 127 * depth);
+            // Bonus for a quiet ttMove that fails high
+            if (!ttCapture)
+                update_quiet_histories(pos, ss, *this, ttData.move, std::min(108 * depth, 1773));
 
-                // Extra penalty for early quiet moves of the previous ply
-                if (prevSq != SQ_NONE && (ss - 1)->moveCount < 3 && !priorCapture)
-                    update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -2222);
-            }
-
-            // Partial workaround for the graph history interaction problem.
-            // For high rule60 counts don't produce transposition table cutoffs.
-            if (pos.rule60_count() < 116)
-            {
-                if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move)
-                    && pos.legal(ttData.move) && !is_decisive(ttData.value))
-                {
-                    pos.do_move(ttData.move, st);
-                    Key nextPosKey                             = pos.key();
-                    auto [ttHitNext, ttDataNext, ttWriterNext] = tt.probe(nextPosKey);
-                    pos.undo_move(ttData.move);
-
-                    // Check that the ttValue after the tt move would also trigger a cutoff
-                    if (!is_valid(ttDataNext.value))
-                        return ttData.value;
-
-                    if ((ttData.value >= beta) == (-ttDataNext.value >= beta))
-                        return ttData.value;
-                }
-            }
+            // Extra penalty for early quiet moves of the previous ply
+            if (prevSq != SQ_NONE && (ss - 1)->moveCount < 3 && !priorCapture)
+                update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -2218);
         }
-        // Case B: No cutoff, but depth was sufficient. Compare the aspiration window to the bound.
-        else if (ttData.bound != BOUND_EXACT
-                 && (ttData.bound & (ttData.value >= beta ? BOUND_UPPER : BOUND_LOWER))
-                 && depth > 5)
+
+        // Partial workaround for the graph history interaction problem
+        // For high rule60 counts don't produce transposition table cutoffs.
+        if (pos.rule60_count() < RuleConfig::rule60MaxPly - 4)
         {
-            // If such a mismatch is the only reason cutoff failed, the TT entry is now useless
-            ttWriter.penalize(1);
+            if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move) && pos.legal(ttData.move)
+                && !is_decisive(ttData.value))
+            {
+                pos.do_move(ttData.move, st);
+                Key nextPosKey                             = pos.key();
+                auto [ttHitNext, ttDataNext, ttWriterNext] = tt.probe(nextPosKey);
+                pos.undo_move(ttData.move);
+
+                // Check that the ttValue after the tt move would also trigger a cutoff
+                if (!is_valid(ttDataNext.value))
+                    return ttData.value;
+
+                if ((ttData.value >= beta) == (-ttDataNext.value >= beta))
+                    return ttData.value;
+            }
+            else
+                return ttData.value;
         }
+    }  // No cutoff, but why? Compare the aspiration window to the inexact bound
+    else if (!PvNode && !excludedMove && ttData.depth > depth - (ttData.value <= beta)
+             && is_valid(ttData.value) && ttData.bound != BOUND_EXACT
+             && ttData.bound & (ttData.value >= beta ? BOUND_UPPER : BOUND_LOWER) && depth > 5)
+    {  // If such a mismatch is the only reason cutoff failed, the tte is now useless
+        ttWriter.penalize(1);
     }
 
     if (ss->inCheck)

@@ -1170,20 +1170,11 @@ bool Position::chase_legal(Move m, Bitboard b) const {
 // Calculates the exact SkyRule attacker -> victim relation for a given color.
 // Unlike chased(), this keeps the attacker's identity. The supplied SkyRule
 // binary stores both the victim union and the chaser union for each historical move.
-// Shares the same chase_legal(m, b) primitive and the same checkUs/checkThem
-// semantics as chased(), so the "常捉无根子" detection stays consistent across rules.
+// Shares the same chase_legal(m) primitive (synced to the source, unmasked) as
+// chased(), so the "常捉无根子" detection stays consistent across rules.
 SkyChaseMap Position::sky_chased(Color c) {
 
     SkyChaseMap chase;
-
-    // Checkers bitboard for both sides, computed before the sideToMove swap so
-    // that the semantics match chased(): checkUs is c's checker state, checkThem
-    // is c's checking state. Passed to the shared chase_legal(m, b) so it only
-    // flags moves that create NEW attacks on the king.
-    Bitboard checkUs   = st->checkersBB;
-    Bitboard checkThem = checkers_to(sideToMove, king_square(~sideToMove));
-    if (c != sideToMove)
-        std::swap(checkUs, checkThem);
 
     std::swap(c, sideToMove);
 
@@ -1201,17 +1192,20 @@ SkyChaseMap Position::sky_chased(Color c) {
             attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
                      | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
 
+        // Protected rooks chased by a knight/cannon count directly. Advisor/bishop
+        // attacks on stronger pieces (rook/knight/cannon) are also a chase; sky_chased
+        // is only called under SkyRule (chinese_like), so this branch is always live.
         Bitboard candidates = 0;
         if (attackerType == KNIGHT || attackerType == CANNON)
             candidates = attacks & pieces(~sideToMove, ROOK);
-        if (RuleConfig::chinese_like() && (attackerType == ADVISOR || attackerType == BISHOP))
+        if (attackerType == ADVISOR || attackerType == BISHOP)
             candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
 
         attacks ^= candidates;
         while (candidates)
         {
             Square to = pop_lsb(candidates);
-            if (chase_legal(Move(from, to), checkUs))
+            if (chase_legal(Move(from, to)))
                 chase.add(idBoard[to], attackerId);
         }
 
@@ -1219,31 +1213,18 @@ SkyChaseMap Position::sky_chased(Color c) {
         {
             Square to = pop_lsb(attacks);
             Move   m(from, to);
-            if (!chase_legal(m, checkUs))
+            if (!chase_legal(m))
                 continue;
 
-            bool trueChase             = true;
-            const auto [captured, id] = do_move(m);
-            Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
-            while (recaptures)
-            {
-                Square sq = pop_lsb(recaptures);
-                if (chase_legal(Move(sq, to), checkThem))
-                {
-                    trueChase = false;
-                    break;
-                }
-            }
-            undo_move(m, captured, id);
-
-            if (!trueChase)
-                continue;
-
+            // Count every legal capture threat as a chase, including recapturable
+            // ones, so one-sided perpetual-capture cycles (常抓) are ruled a loss
+            // for the initiator. Mutual/symmetric attacks stay draws via the
+            // same-type branch and detect_sky_cycle's blame assignment.
             if (attackerType == type_of(piece_on(to)))
             {
                 sideToMove = ~sideToMove;
                 if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
-                    || !chase_legal(Move(to, from), checkThem))
+                    || !chase_legal(Move(to, from)))
                     chase.add(idBoard[to], attackerId);
                 sideToMove = ~sideToMove;
             }
@@ -1278,6 +1259,14 @@ ChaseMap Position::chased(Color c) {
     if (c != sideToMove)
         std::swap(checkUs, checkThem);
 
+    // AsianRule, YitianRule and SkyRule sync their shared chase_legal primitive
+    // to the source (unmasked, b=0). ChineseRule and ComputerRule keep the
+    // checkUs/checkThem masking the target added for "only flag NEW king attacks".
+    const bool keepMask = RuleConfig::repetitionRule == RuleConfig::RepetitionRule::CHINESE
+                       || RuleConfig::repetitionRule == RuleConfig::RepetitionRule::COMPUTER;
+    Bitboard   maskUs   = keepMask ? checkUs : 0;
+    Bitboard   maskThem = keepMask ? checkThem : 0;
+
     std::swap(c, sideToMove);
 
     // King and pawn can legally perpetual chase.
@@ -1295,59 +1284,50 @@ ChaseMap Position::chased(Color c) {
             attacks &= (pieces(~sideToMove) ^ pieces(~sideToMove, KING, PAWN))
                      | (pieces(~sideToMove, PAWN) & HalfBB[sideToMove]);
 
-        // Protected rooks chased by a knight/cannon count directly. ChineseRule and SkyRule
-        // additionally treat advisor/bishop attacks on stronger pieces as a chase.
+        // Protected rooks chased by a knight/cannon count directly. Advisor/bishop
+        // attacks on stronger pieces (rook/knight/cannon) are also treated as a chase;
+        // this matches the source's `type_of(piece_on(to)) & 1` branch applied
+        // unconditionally (the target previously gated it on chinese_like()).
         Bitboard candidates = 0;
         if (attackerType == KNIGHT || attackerType == CANNON)
             candidates = attacks & pieces(~sideToMove, ROOK);
-        if (RuleConfig::chinese_like() && (attackerType == ADVISOR || attackerType == BISHOP))
+        if (attackerType == ADVISOR || attackerType == BISHOP)
             candidates |= attacks & pieces(~sideToMove, ROOK, KNIGHT, CANNON);
 
         attacks ^= candidates;
         while (candidates)
         {
             Square to = pop_lsb(candidates);
-            if (chase_legal(Move(from, to), checkUs))
+            if (chase_legal(Move(from, to), maskUs))
                 chase |= make_chase(idBoard[to], idBoard[from]);
         }
 
-        // Attacks against potentially unprotected pieces.
+        // Attacks against enemy pieces. Unlike the strict Asian rule (which only
+        // flags threats on truly unprotected pieces), here we count EVERY legal
+        // capture threat as a chase, including ones that would be recaptured. This
+        // lets detect_chases rule one-sided perpetual-capture cycles (常抓) as a
+        // loss for the initiator. Mutual/symmetric attacks stay draws: the
+        // same-type branch below suppresses symmetric pairs, and detect_chases'
+        // XOR only blames a side whose chases are not matched by the opponent.
         while (attacks)
         {
             Square to = pop_lsb(attacks);
             Move   m  = Move(from, to);
 
-            if (chase_legal(m, checkUs))
-            {
-                bool trueChase             = true;
-                const auto& [captured, id] = do_move(m);
-                Bitboard recaptures        = attackers_to(to) & pieces(sideToMove);
-                while (recaptures)
-                {
-                    Square s = pop_lsb(recaptures);
-                    if (chase_legal(Move(s, to), checkThem))
-                    {
-                        trueChase = false;
-                        break;
-                    }
-                }
-                undo_move(m, captured, id);
+            if (!chase_legal(m, maskUs))
+                continue;
 
-                if (trueChase)
-                {
-                    // Exclude mutual/symmetric attacks except pins.
-                    if (attackerType == type_of(piece_on(to)))
-                    {
-                        sideToMove = ~sideToMove;
-                        if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
-                            || !chase_legal(Move(to, from), checkThem))
-                            chase |= make_chase(idBoard[to], idBoard[from]);
-                        sideToMove = ~sideToMove;
-                    }
-                    else
-                        chase |= make_chase(idBoard[to], idBoard[from]);
-                }
+            // Exclude mutual/symmetric attacks except pins.
+            if (attackerType == type_of(piece_on(to)))
+            {
+                sideToMove = ~sideToMove;
+                if ((attackerType == KNIGHT && ((between_bb(from, to) ^ to) & pieces()))
+                    || !chase_legal(Move(to, from), maskThem))
+                    chase |= make_chase(idBoard[to], idBoard[from]);
+                sideToMove = ~sideToMove;
             }
+            else
+                chase |= make_chase(idBoard[to], idBoard[from]);
         }
     }
 
@@ -1713,15 +1693,53 @@ Value Position::detect_chases(int d, int ply) {
                                                    : VALUE_DRAW;
     }
 
-    // Asian/Chinese/Sky/Yitian use the 2-fold chase classifier. ChineseRule and
-    // SkyRule share the "all pieces simultaneously" semantics. The chase diff is
+    // Asian/Chinese/Yitian use the 2-fold chase classifier (SkyRule is routed to
+    // detect_sky_cycle by rule_judge and never reaches here). The chase diff is
     // computed with ChaseMap (victim, attacker) pairs so that a victim chased by
     // a different attacker is not confused with a continued chase by the original
-    // attacker (the "带根长捉" fix shared by all three rules). The accumulated
-    // victim mask is then consumed by each rule's own scoring below.
+    // attacker (the "带根长捉" precision kept on purpose across all rules).
     const bool chineseLike = RuleConfig::chinese_like();
     const bool chineseRule = RuleConfig::repetitionRule == RR::CHINESE;
 
+    if (!chineseLike)
+    {
+        // AsianRule / YitianRule: source-style 2-fold chase classifier. Bail on
+        // any checker in the cycle (source returns VALUE_DRAW); no rook-pinned
+        // special case; no chineseLike recompute. ChaseMap pair-diff preserved.
+        u16      chase[COLOR_NB] = {0xFFFF, 0xFFFF};
+        ChaseMap newChase[COLOR_NB];
+        newChase[us] = chased(us);
+
+        for (int i = 0; i < d; ++i)
+        {
+            if (st->checkersBB)
+                return VALUE_DRAW;
+            if (!chase[~sideToMove])
+            {
+                if (!chase[sideToMove])
+                    break;
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+            }
+            else
+            {
+                ChaseMap oldChase = chased(~sideToMove);
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+                ChaseMap chases = oldChase;
+                (void)(chases & newChase[sideToMove]);
+                newChase[sideToMove] = chased(sideToMove);
+                chase[sideToMove] &= u16(chases);
+            }
+        }
+
+        return bool(chase[us]) ^ bool(chase[them])
+                 ? chase[us] ? mated_in(ply) : mate_in(ply) : VALUE_DRAW;
+    }
+
+    // ChineseRule: keep the target's chineseLike + mate-threat + rook-pinned
+    // classifier. (chineseLike is true here, so the !chineseLike sub-branches in
+    // the loop below are inert.)
     u16      rooks[COLOR_NB] = {0xFFFF, 0xFFFF};
     u16      chase[COLOR_NB] = {0xFFFF, 0xFFFF};  // u16 victim-mask intersection accumulation
     ChaseMap newChase[COLOR_NB];                  // ChaseMap (victim, attacker) per side

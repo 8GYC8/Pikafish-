@@ -36,6 +36,7 @@
 #include "numa.h"
 #include "perft.h"
 #include "position.h"
+#include "rules.h"
 #include "search.h"
 #include "shm.h"
 #include "types.h"
@@ -105,6 +106,63 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add("Move Overhead", Option(10, 0, 5000));
 
     options.add("nodestime", Option(0, 0, 10000));
+
+    options.add(  //
+      "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
+          Rules::mateThreatDepth = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Repetition Rule",
+      Option(
+        "AsianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var "
+        "AllowChase var NoJudgement",
+        "AsianRule", [](const Option& o) {
+            Rules::repetitionRule =
+              o == "ChineseRule"   ? Rules::RepetitionRule::CHINESE
+              : o == "SkyRule"     ? Rules::RepetitionRule::SKY
+              : o == "ComputerRule" ? Rules::RepetitionRule::COMPUTER
+              : o == "YitianRule"  ? Rules::RepetitionRule::YITIAN
+              : o == "AllowChase"  ? Rules::RepetitionRule::ALLOW_CHASE
+              : o == "NoJudgement" ? Rules::RepetitionRule::NO_JUDGEMENT
+                                   : Rules::RepetitionRule::ASIAN;
+
+            // Default sixty-move limit per rule family:
+            // AsianRule/SkyRule use 120 plies, YitianRule uses 140 plies.
+            if (Rules::sky_rule())
+                Rules::rule60MaxPly = 120;
+            else if (Rules::yitian_rule())
+                Rules::rule60MaxPly = 140;
+            return std::nullopt;
+        }));
+
+    options.add(  //
+      "Draw Rule",
+      Option(
+        "None var None var DrawAsBlackWin var DrawAsRedWin var DrawRepAsBlackWin var "
+        "DrawRepAsRedWin",
+        "None", [](const Option& o) {
+            Rules::drawRule =
+              o == "DrawAsBlackWin"      ? Rules::DrawRule::DRAW_AS_BLACK_WIN
+              : o == "DrawAsRedWin"      ? Rules::DrawRule::DRAW_AS_RED_WIN
+              : o == "DrawRepAsBlackWin" ? Rules::DrawRule::DRAW_REP_AS_BLACK_WIN
+              : o == "DrawRepAsRedWin"   ? Rules::DrawRule::DRAW_REP_AS_RED_WIN
+                                         : Rules::DrawRule::NONE;
+            return std::nullopt;
+        }));
+
+    options.add(  //
+      "Sixty Move Rule", Option(true, [](const Option& o) {
+          Rules::sixtyMoveRule = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Rule60MaxPly", Option(120, 90, 150, [](const Option& o) {
+          Rules::rule60MaxPly = int(o);
+          return std::nullopt;
+      }));
 
     options.add("UCI_ShowWDL", Option(false));
 

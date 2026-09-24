@@ -818,8 +818,15 @@ void UCIEngine::position(std::istringstream& is) {
         is >> token;  // Consume the "moves" token, if any
     }
     else if (token == "fen")
+    {
         while (is >> token && token != "moves")
             fen += token + " ";
+        // Default FEN: when `fen` is given without a FEN string, use StartFEN.
+        // (Old GUIs may send `position fen` / `position fen moves ...` with an
+        // empty FEN; without this fallback the empty string would be a fatal error.)
+        if (fen.empty())
+            fen = StartFEN;
+    }
     else
         return;
 

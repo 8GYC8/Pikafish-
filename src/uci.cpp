@@ -451,6 +451,12 @@ void UCIEngine::loop() {
         }
         else if (token == "position")
             position(is);
+        // Non-UCI extension ported from the "perfect Asian rule" reference:
+        // allow `fen <FEN>` and `startpos` as top-level commands (no `position`
+        // prefix needed). When `fen` is given without a FEN string, fall back
+        // to the default StartFEN.
+        else if (token == "fen" || token == "startpos")
+            is.seekg(0), position(is);
         else if (token == "ucinewgame")
             engine.search_clear();
         else if (token == "isready")

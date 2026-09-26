@@ -902,10 +902,19 @@ std::string UCIEngine::format_score(const Score& s) {
 // without treatment of mate and similar special scores.
 int UCIEngine::to_cp(Value v, const Position& pos) {
 
-    // In general, the score can be defined via the WDL as
+    // Display-only conversion selected by the "ScoreType" UCI option.
+    // The internal search value is untouched, and the WDL output
+    // always uses win_rate_model regardless of this setting.
+    if (scoreTypeMode == ScoreTypeMode::RAW)
+        return int(v);
+
+    // PawnValueNormalized: 100cp == one pawn (PawnValue).
+    if (scoreTypeMode == ScoreTypeMode::PAWN_VALUE_NORMALIZED)
+        return int(std::round(100 * int(v) / PawnValue));
+
+    // Elo: in general, the score can be defined via the WDL as
     // (log(1/L - 1) - log(1/W - 1)) / (log(1/L - 1) + log(1/W - 1)).
     // Based on our win_rate_model, this simply yields v / a.
-
     auto [a, b] = win_rate_params(pos);
 
     return int(std::round(100 * int(v) / a));

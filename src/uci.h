@@ -54,7 +54,7 @@ class UCIEngine {
     static std::string to_lower(std::string str);
     static Move        to_move(const Position& pos, std::string str);
 
-    static inline ScoreTypeMode scoreTypeMode = ScoreTypeMode::Elo;
+    static inline ScoreTypeMode scoreTypeMode = ScoreTypeMode::ELO;
 
     Search::LimitsType parse_limits(std::istream& is);
 

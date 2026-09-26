@@ -164,7 +164,17 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           return std::nullopt;
       }));
 
-    options.add("UCI_ShowWDL", Option(false));
+    options.add("UCI_ShowWDL", Option(true));
+
+    options.add(  //
+      "ScoreType",
+      Option("Elo var Elo var PawnValueNormalized var Raw", "PawnValueNormalized",
+             [](const Option& o) {
+                 UCIEngine::scoreTypeMode = o == "Elo"  ? UCIEngine::ScoreTypeMode::ELO
+                                          : o == "Raw" ? UCIEngine::ScoreTypeMode::RAW
+                                                       : UCIEngine::ScoreTypeMode::PAWN_VALUE_NORMALIZED;
+                 return std::nullopt;
+             }));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {

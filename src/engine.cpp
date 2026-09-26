@@ -168,7 +168,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "ScoreType",
-      Option("Elo var Elo var PawnValueNormalized var Raw", "PawnValueNormalized",
+      Option("Elo var Elo var PawnValueNormalized var Raw", "Elo",
              [](const Option& o) {
                  UCIEngine::scoreTypeMode = o == "Elo"  ? UCIEngine::ScoreTypeMode::ELO
                                           : o == "Raw" ? UCIEngine::ScoreTypeMode::RAW

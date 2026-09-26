@@ -915,9 +915,11 @@ int UCIEngine::to_cp(Value v, const Position& pos) {
     // Elo: in general, the score can be defined via the WDL as
     // (log(1/L - 1) - log(1/W - 1)) / (log(1/L - 1) + log(1/W - 1)).
     // Based on our win_rate_model, this simply yields v / a.
+    // The result is doubled (200 * v / a) as a display-only calibration
+    // so that a one-pawn edge reads around 70cp instead of ~35cp.
     auto [a, b] = win_rate_params(pos);
 
-    return int(std::round(100 * int(v) / a));
+    return int(std::round(200.0 * int(v) / a));
 }
 
 std::string UCIEngine::wdl(Value v, const Position& pos) {

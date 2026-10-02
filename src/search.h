@@ -369,6 +369,11 @@ class Worker {
     Depth     rootDepth;
     Value     rootDelta;
 
+    // True while the main thread searches the very first (depth-1) iteration of
+    // a search. While set, time checks must not abort the iteration so the move
+    // returned to the GUI is always backed by a completed, verified search.
+    bool firstIterationGuard = false;
+
     PVMoves lastIterationIdxPV;
 
     usize                     threadIdx, numaThreadIdx, numaTotal;

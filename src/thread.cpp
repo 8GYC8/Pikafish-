@@ -360,10 +360,24 @@ Thread* ThreadPool::get_best_thread() const {
     for (auto&& th : threads)
         votes[th->worker->rootMoves[0].pv[0]] += th->worker->rootMoves[0].score - minScore + 14;
 
+    // Stability safeguard: a thread whose best root move was never searched
+    // (score still -VALUE_INFINITE, e.g. an iteration aborted at depth 1) must
+    // never be selected over a thread that has a completed, evaluated search.
+    for (auto&& th : threads)
+        if (th->worker->rootMoves[0].score != -VALUE_INFINITE)
+        {
+            bestThread = th.get();
+            break;
+        }
+
     for (auto&& th : threads)
     {
         const auto& bestThreadMove = bestThread->worker->rootMoves[0];
         const auto& newThreadMove  = th->worker->rootMoves[0];
+
+        // Never let an unsearched root move take part in the selection
+        if (newThreadMove.score == -VALUE_INFINITE)
+            continue;
 
         const auto bestThreadMoveVote = votes[bestThreadMove.pv[0]];
         const auto newThreadMoveVote  = votes[newThreadMove.pv[0]];

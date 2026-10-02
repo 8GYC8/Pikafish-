@@ -48,13 +48,15 @@ namespace Stockfish {
 using namespace Attacks;
 
 namespace RuleConfig {
-// Defaults: YitianRule with rule140, Sixty Move Rule off.
-// AsianRule and SkyRule default to rule120 with Sixty Move Rule on (enforced in engine.cpp couplings).
+// Defaults: YitianRule with rule150, Sixty Move Rule on.
+// AsianRule/SkyRule couple to rule120 and YitianRule couples to rule150;
+// the Sixty Move Rule stays on for all three (enforced in engine.cpp
+// couplings).
 RepetitionRule repetitionRule  = RepetitionRule::YITIAN;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;
-bool           sixtyMoveRule   = false;
-int            rule60MaxPly    = 140;
+bool           sixtyMoveRule   = true;
+int            rule60MaxPly    = 150;
 }  // namespace RuleConfig
 
 namespace Zobrist {
@@ -1906,8 +1908,9 @@ bool Position::rule_judge(Value& result, int ply) {
         }
     }
 
-    // Configurable natural-move rule. Selecting YitianRule turns this off in the UCI callback,
-    // matching the target binary.
+    // Configurable natural-move rule. The Repetition Rule callback keeps this
+    // switched on for AsianRule/SkyRule/YitianRule with rule120/rule120/
+    // rule150 respectively.
     if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
         && st->rule60 >= RuleConfig::rule60MaxPly)
     {

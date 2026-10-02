@@ -159,20 +159,19 @@ Option& Option::operator=(const std::string& v) {
 
     if (type == "combo")
     {
-        // defaultValue stores the complete UCI combo suffix, e.g.
-        // "AsianRule var AsianRule var ChineseRule ...".  Validate against
-        // the actual values while ignoring the repeated UCI "var" markers.
-        bool               found = false;
+        // [崩溃修复] 原实现把 defaultValue 按空格逐 token add 进 comboMap,
+        // 而 "ScoreType" 的 defaultValue 为 "Elo var Elo var PawnValueNormalized var Raw",
+        // "Repetition Rule"/"Draw Rule" 的 defaultValue 中默认值同样重复出现,
+        // 任何一次 setoption 这些选项都会触发 OptionsMap::add 的重复添加保护,
+        // 直接 std::exit(EXIT_FAILURE) (进程无声退出)。
+        // 现跳过 "var" 分隔符并去重, 保证 GUI 设置这些选项不再崩溃。
+        OptionsMap         comboMap;  // To have case insensitive compare
         std::string        token;
         std::istringstream ss(defaultValue);
         while (ss >> token)
-            if (token != "var" && !CaseInsensitiveLess()(token, v)
-                               && !CaseInsensitiveLess()(v, token))
-            {
-                found = true;
-                break;
-            }
-        if (!found || v == "var")
+            if (token != "var" && !comboMap.count(token))
+                comboMap.add(token, Option());
+        if (!comboMap.count(v) || v == "var")
             return *this;
     }
 
@@ -200,29 +199,17 @@ std::ostream& operator<<(std::ostream& os, const OptionsMap& om) {
                 const Option& o = it.second;
                 os << "\noption name " << it.first << " type " << o.type;
 
-                // TOML is loaded before the GUI sends `uci`, so advertise the
-                // configured current value as this process' startup default. This makes
-                // GUIs reflect pikafish.toml instead of the compile-time defaults.
-                if (o.type == "check")
-                    os << " default " << o.currentValue;
-
-                else if (o.type == "combo")
-                {
-                    os << " default " << o.currentValue;
-                    // defaultValue also stores the supported `var ...` suffix.
-                    const auto vars = o.defaultValue.find(" var ");
-                    if (vars != std::string::npos)
-                        os << o.defaultValue.substr(vars);
-                }
+                if (o.type == "check" || o.type == "combo")
+                    os << " default " << o.defaultValue;
 
                 else if (o.type == "string")
                 {
-                    std::string currentValue = o.currentValue.empty() ? "<empty>" : o.currentValue;
-                    os << " default " << currentValue;
+                    std::string defaultValue = o.defaultValue.empty() ? "<empty>" : o.defaultValue;
+                    os << " default " << defaultValue;
                 }
 
                 else if (o.type == "spin")
-                    os << " default " << stoi(o.currentValue) << " min " << o.min << " max "
+                    os << " default " << stoi(o.defaultValue) << " min " << o.min << " max "
                        << o.max;
 
                 break;

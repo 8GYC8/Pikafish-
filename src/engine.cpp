@@ -106,7 +106,95 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("nodestime", Option(0, 0, 10000));
 
+    options.add(  //
+      "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
+          RuleConfig::mateThreatDepth = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Repetition Rule",
+      Option("YitianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
+             "YitianRule", [this](const Option& o) {
+                 using RR = RuleConfig::RepetitionRule;
+
+                 RuleConfig::repetitionRule =
+                   o == "ChineseRule"  ? RR::CHINESE
+                   : o == "SkyRule"    ? RR::SKY
+                   : o == "ComputerRule" ? RR::COMPUTER
+                   : o == "YitianRule" ? RR::YITIAN
+                   : o == "AllowChase" ? RR::ALLOW_CHASE
+                   : o == "NoJudgement" ? RR::NO_JUDGEMENT
+                                        : RR::ASIAN;
+
+                 // Couplings for AsianRule, SkyRule and YitianRule:
+                 // AsianRule/SkyRule use rule120 and YitianRule uses rule150
+                 // (Rule60MaxPly stays freely adjustable 90-150), and the
+                 // Sixty Move Rule is switched on for all three rules. The
+                 // coupled options are assigned through the OptionsMap so that
+                 // GUIs reflect the new defaults and the options' own callbacks
+                 // keep RuleConfig in sync.
+                 if (RuleConfig::repetitionRule == RR::ASIAN
+                     || RuleConfig::repetitionRule == RR::SKY
+                     || RuleConfig::repetitionRule == RR::YITIAN)
+                 {
+                     const char* rule60Ply =
+                       RuleConfig::repetitionRule == RR::YITIAN ? "150" : "120";
+
+                     if (auto it = options.options_map.find("Rule60MaxPly");
+                         it != options.options_map.end())
+                         it->second = std::string(rule60Ply);
+
+                     if (auto it = options.options_map.find("Sixty Move Rule");
+                         it != options.options_map.end())
+                         it->second = std::string("true");
+                 }
+
+                 return std::nullopt;
+             }));
+
+    options.add(  //
+      "Draw Rule",
+      Option("None var None var DrawAsBlackWin var DrawAsRedWin var DrawRepAsBlackWin var DrawRepAsRedWin",
+             "None", [](const Option& o) {
+                 using DR = RuleConfig::DrawRule;
+                 RuleConfig::drawRule =
+                   o == "DrawAsBlackWin"      ? DR::BLACK_WIN
+                   : o == "DrawAsRedWin"      ? DR::RED_WIN
+                   : o == "DrawRepAsBlackWin" ? DR::REP_BLACK_WIN
+                   : o == "DrawRepAsRedWin"   ? DR::REP_RED_WIN
+                                               : DR::NONE;
+                 return std::nullopt;
+             }));
+
+    options.add(  //
+      "Sixty Move Rule", Option(true, [](const Option& o) {
+          // The natural-move draw defaults on for every rule (including
+          // YitianRule) and can be freely toggled by the GUI; selecting
+          // AsianRule/SkyRule/YitianRule always switches it back on via the
+          // Repetition Rule coupling.
+          RuleConfig::sixtyMoveRule = int(o) != 0;
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Rule60MaxPly", Option(150, 90, 150, [](const Option& o) {
+          // Defaults to rule120 for AsianRule/SkyRule and rule150 for
+          // YitianRule; freely adjustable between 90 and 150 plies.
+          RuleConfig::rule60MaxPly = int(o);
+          return std::nullopt;
+      }));
+
     options.add("UCI_ShowWDL", Option(false));
+
+    options.add(  //
+      "ScoreType",
+      Option("Elo var PawnValueNormalized var Raw", "Elo", [](const Option& o) {
+          UCIEngine::scoreTypeMode = o == "Elo"  ? UCIEngine::ScoreTypeMode::Elo
+                                   : o == "Raw" ? UCIEngine::ScoreTypeMode::RAW
+                                                : UCIEngine::ScoreTypeMode::PAWN_VALUE_NORMALIZED;
+          return std::nullopt;
+      }));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {

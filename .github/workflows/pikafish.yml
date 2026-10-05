@@ -3,7 +3,9 @@ name: Pikafish
 on:
   push:
     branches:
-      - 8GYC8-906-3H1
+      - master
+      - 8GYC8-914-3H1
+  workflow_dispatch:
 
 jobs:
   Pikafish-x86-64:

@@ -159,18 +159,11 @@ Option& Option::operator=(const std::string& v) {
 
     if (type == "combo")
     {
-        // [崩溃修复] 原实现把 defaultValue 按空格逐 token add 进 comboMap,
-        // 而 "ScoreType" 的 defaultValue 为 "Elo var Elo var PawnValueNormalized var Raw",
-        // "Repetition Rule"/"Draw Rule" 的 defaultValue 中默认值同样重复出现,
-        // 任何一次 setoption 这些选项都会触发 OptionsMap::add 的重复添加保护,
-        // 直接 std::exit(EXIT_FAILURE) (进程无声退出)。
-        // 现跳过 "var" 分隔符并去重, 保证 GUI 设置这些选项不再崩溃。
         OptionsMap         comboMap;  // To have case insensitive compare
         std::string        token;
         std::istringstream ss(defaultValue);
         while (ss >> token)
-            if (token != "var" && !comboMap.count(token))
-                comboMap.add(token, Option());
+            comboMap.add(token, Option());
         if (!comboMap.count(v) || v == "var")
             return *this;
     }

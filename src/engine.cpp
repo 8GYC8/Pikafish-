@@ -56,7 +56,7 @@ constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
 Engine::Engine(std::optional<std::filesystem::path> path) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
     states(new std::deque<StateInfo>(1)),
     threads(),
     networkFile{std::nullopt, ""},
@@ -71,7 +71,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "NumaPolicy", Option("hardware", [this](const Option& o) {
+      "NumaPolicy", Option("auto", [this](const Option& o) {
           if (!set_numa_config_from_option(o))
               return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
           return numa_config_information_as_string() + "\n"
@@ -115,7 +115,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add(  //
       "Repetition Rule",
       Option("YitianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
-             "YitianRule", [this](const Option& o) {
+             "YitianRule", [](const Option& o) {
                  using RR = RuleConfig::RepetitionRule;
 
                  RuleConfig::repetitionRule =
@@ -127,28 +127,15 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                    : o == "NoJudgement" ? RR::NO_JUDGEMENT
                                         : RR::ASIAN;
 
-                 // Couplings for AsianRule, SkyRule and YitianRule:
-                 // AsianRule/SkyRule use rule120 and YitianRule uses rule150
-                 // (Rule60MaxPly stays freely adjustable 90-150), and the
-                 // Sixty Move Rule is switched on for all three rules. The
-                 // coupled options are assigned through the OptionsMap so that
-                 // GUIs reflect the new defaults and the options' own callbacks
-                 // keep RuleConfig in sync.
+                 // Rule60MaxPly and Sixty Move Rule couplings:
+                 // AsianRule and SkyRule default to rule120,
+                 // YitianRule defaults to rule150.
+                 // Sixty Move Rule stays on for all of them.
                  if (RuleConfig::repetitionRule == RR::ASIAN
-                     || RuleConfig::repetitionRule == RR::SKY
-                     || RuleConfig::repetitionRule == RR::YITIAN)
-                 {
-                     const char* rule60Ply =
-                       RuleConfig::repetitionRule == RR::YITIAN ? "150" : "120";
-
-                     if (auto it = options.options_map.find("Rule60MaxPly");
-                         it != options.options_map.end())
-                         it->second = std::string(rule60Ply);
-
-                     if (auto it = options.options_map.find("Sixty Move Rule");
-                         it != options.options_map.end())
-                         it->second = std::string("true");
-                 }
+                     || RuleConfig::repetitionRule == RR::SKY)
+                     RuleConfig::rule60MaxPly = 120;
+                 else if (RuleConfig::repetitionRule == RR::YITIAN)
+                     RuleConfig::rule60MaxPly = 150;
 
                  return std::nullopt;
              }));
@@ -169,38 +156,18 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add(  //
       "Sixty Move Rule", Option(true, [](const Option& o) {
-          // The natural-move draw defaults on for every rule (including
-          // YitianRule) and can be freely toggled by the GUI; selecting
-          // AsianRule/SkyRule/YitianRule always switches it back on via the
-          // Repetition Rule coupling.
           RuleConfig::sixtyMoveRule = int(o) != 0;
           return std::nullopt;
       }));
 
     options.add(  //
       "Rule60MaxPly", Option(150, 90, 150, [](const Option& o) {
-          // Defaults to rule120 for AsianRule/SkyRule and rule150 for
-          // YitianRule; freely adjustable between 90 and 150 plies.
+          // Adjustable 90-150 (default rule120 for AsianRule/SkyRule, rule150 for YitianRule).
           RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));
 
     options.add("UCI_ShowWDL", Option(false));
-
-    // Display-only score conversion selector (kept from the PK928 lineage).
-    // Note: the defaultValue lists each token exactly once; the duplicated-token
-    // crash in the original combo parsing is fixed in ucioption.cpp anyway.
-    options.add(  //
-      "ScoreType",
-      Option("Elo var PawnValueNormalized var Raw", "Elo", [](const Option& o) {
-          UCIEngine::scoreTypeMode = o == "Elo"  ? UCIEngine::ScoreTypeMode::Elo
-                                   : o == "Raw" ? UCIEngine::ScoreTypeMode::RAW
-                                                : UCIEngine::ScoreTypeMode::PAWN_VALUE_NORMALIZED;
-          return std::nullopt;
-      }));
-
-    // Referenced by uci.cpp's PV output (adds the "wdl" field when enabled).
-    options.add("LU_Output", Option(true));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
@@ -401,13 +368,6 @@ const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 
 std::string Engine::fen() const { return pos.fen(); }
-
-std::pair<bool, Value> Engine::debug_rule_check() {
-    Value result = VALUE_NONE;
-    bool terminal = pos.rule_judge(result, 0);
-    return {terminal, result};
-}
-
 
 std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
 

@@ -36,16 +36,13 @@ class Position;
 
 namespace Stockfish::Eval::NNUE {
 
-struct alignas(CacheLineSize) Accumulator;
-
 class FeatureTransformer;
 
 // Class that holds the result of affine transformation of input features,
 // combined HalfKA + Threats
 struct alignas(CacheLineSize) Accumulator {
-    std::array<std::array<i16, L1>, COLOR_NB>          accumulation;
-    std::array<std::array<i32, PSQTBuckets>, COLOR_NB> psqtAccumulation;
-    std::array<bool, COLOR_NB>                         computed = {};
+    std::array<std::array<i16, L1>, COLOR_NB> accumulation;
+    std::array<bool, COLOR_NB>                computed = {};
 };
 
 
@@ -53,7 +50,7 @@ struct alignas(CacheLineSize) Accumulator {
 // cache contains multiple entries for each of the possible king squares.
 // When the accumulator needs to be refreshed, the cached entry is used to more
 // efficiently update the accumulator, instead of rebuilding it from scratch.
-// This idea, was first described by Luecx (author of Koivisto) and
+// This idea was first described by Luecx (author of Koivisto) and
 // is commonly referred to as "Finny Tables".
 struct AccumulatorCaches {
 
@@ -78,17 +75,16 @@ struct AccumulatorCaches {
     }
 
     struct alignas(CacheLineSize) Entry {
-        std::array<BiasType, L1>                accumulation;
-        std::array<PSQTWeightType, PSQTBuckets> psqtAccumulation;
-        std::array<Piece, SQUARE_NB>            pieces;
-        Bitboard                                pieceBB;
+        std::array<BiasType, L1>     accumulation;
+        std::array<Piece, SQUARE_NB> pieces;
+        Bitboard                     pieceBB;
 
         // To initialize a refresh entry, we set all its bitboards empty,
         // so we put the biases in the accumulation, without any weights on top
         void clear(const std::array<BiasType, L1>& biases) {
             accumulation = biases;
-            std::memset(reinterpret_cast<std::byte*>(this) + offsetof(Entry, psqtAccumulation), 0,
-                        sizeof(Entry) - offsetof(Entry, psqtAccumulation));
+            std::memset(reinterpret_cast<std::byte*>(this) + offsetof(Entry, pieces), 0,
+                        sizeof(Entry) - offsetof(Entry, pieces));
         }
     };
 

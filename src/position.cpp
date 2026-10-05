@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "attacks.h"
 #include "bitboard.h"
@@ -49,9 +50,7 @@ using namespace Attacks;
 
 namespace RuleConfig {
 // Defaults: YitianRule with rule150, Sixty Move Rule on.
-// AsianRule/SkyRule couple to rule120 and YitianRule couples to rule150;
-// the Sixty Move Rule stays on for all three (enforced in engine.cpp
-// couplings).
+// AsianRule and SkyRule default to rule120 with Sixty Move Rule on (enforced in engine.cpp couplings).
 RepetitionRule repetitionRule  = RepetitionRule::YITIAN;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;
@@ -210,6 +209,7 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
 
     if (rank != RANK_0 || file != FILE_NB)
         return PositionSetError("Invalid FEN. Board state encoding ended but cursor not at end.");
+
     if (count<KING>(WHITE) != 1 || count<KING>(BLACK) != 1)
         return PositionSetError("Unsupported position. Incorrect number of kings.");
 
@@ -1359,6 +1359,143 @@ ChaseMap Position::chased(Color c) {
 }
 
 
+// Detects chases from state st - d to state st.
+Value Position::detect_chases(int d, int ply) {
+
+    using RR = RuleConfig::RepetitionRule;
+
+    // AllowChase only forbids perpetual check; this function is called for a non-checking cycle.
+    // NoJudgement does not assign blame for a cycle.
+    if (RuleConfig::repetitionRule == RR::ALLOW_CHASE
+        || RuleConfig::repetitionRule == RR::NO_JUDGEMENT)
+        return VALUE_DRAW;
+
+    // Grant each piece on board a unique id for each side.
+    int whiteId = 0;
+    int blackId = 0;
+    for (Square s = SQ_A0; s <= SQ_I9; ++s)
+        if (board[s] != NO_PIECE)
+            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
+
+    Color us = sideToMove, them = ~us;
+
+    // ComputerRule keeps the current strict detector.
+    if (RuleConfig::repetitionRule == RR::COMPUTER)
+    {
+        u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
+        for (int i = 0; i < d; ++i)
+        {
+            if (st->checkersBB)
+                return VALUE_DRAW;
+            else if (!chase[~sideToMove])
+            {
+                if (!chase[sideToMove])
+                    break;
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+            }
+            else
+            {
+                u16 after = u16(chased(~sideToMove));
+                undo_move(st->move, st->capturedPiece);
+                st = st->previous;
+                chase[sideToMove] &= after & ~u16(chased(sideToMove));
+            }
+        }
+
+        return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? mated_in(ply) : mate_in(ply)
+                                                   : VALUE_DRAW;
+    }
+
+    // Asian/Chinese/Sky/Yitian use the 2-fold chase classifier. ChineseRule and
+    // SkyRule share the "all pieces simultaneously" semantics. The chase diff is
+    // computed with ChaseMap (victim, attacker) pairs so that a victim chased by
+    // a different attacker is not confused with a continued chase by the original
+    // attacker (the "带根长捉" fix shared by all three rules). The accumulated
+    // victim mask is then consumed by each rule's own scoring below.
+    const bool chineseLike = RuleConfig::chinese_like();
+    const bool chineseRule = RuleConfig::repetitionRule == RR::CHINESE;
+
+    u16      rooks[COLOR_NB] = {0xFFFF, 0xFFFF};
+    u16      chase[COLOR_NB] = {0xFFFF, 0xFFFF};  // u16 victim-mask intersection accumulation
+    ChaseMap newChase[COLOR_NB];                  // ChaseMap (victim, attacker) per side
+    newChase[us] = chased(us);
+
+    for (int i = 0; i < d; ++i)
+    {
+        if (!chase[~sideToMove])
+        {
+            if (!chase[sideToMove])
+                break;
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
+        }
+        else if (st->checkersBB
+                 || (chineseRule && RuleConfig::mateThreatDepth > 0 && has_mate_threat()))
+        {
+            // In Chinese-like rules, check/mate-threat is treated as chasing all pieces.
+            chase[~sideToMove] &= chineseLike ? 0xFFFF : 0;
+            rooks[~sideToMove] = 0;
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
+        }
+        else
+        {
+            ChaseMap oldChase = chased(~sideToMove);
+            u16      flag     = 0;
+
+            // Asian-style special case: a rook pinned by a knight may itself be the chased piece.
+            if (!chineseLike && rooks[~sideToMove]
+                && (blockers_for_king(sideToMove) & pieces(sideToMove, ROOK)))
+            {
+                Bitboard knights = pinners(~sideToMove) & pieces(KNIGHT);
+                while (knights)
+                {
+                    Square   s = pop_lsb(knights);
+                    Bitboard b = between_bb(king_square(sideToMove), s) ^ s;
+                    s          = pop_lsb(b);
+                    if (piece_on(s) == make_piece(sideToMove, ROOK))
+                        flag |= 1 << idBoard[s];
+                }
+            }
+
+            undo_move(st->move, st->capturedPiece);
+            st = st->previous;
+
+            // ChaseMap diff (victim, attacker): newly created chase pairs for this move.
+            // operator& is an in-place set difference; the (void) cast keeps the side effect
+            // (chases becomes oldChase - newChase) and discards the returned reference.
+            ChaseMap chases = oldChase;
+            (void)(chases & newChase[sideToMove]);
+            u16      chasesU16    = u16(chases);  // collapse to victim mask for accumulation
+            newChase[sideToMove] = chased(sideToMove);
+
+            if (chineseLike)
+            {
+                // Chinese-like rules recompute the diff against the updated newChase.
+                chases = oldChase;
+                (void)(chases & newChase[sideToMove]);
+                chasesU16 = u16(chases);
+            }
+            else if (i == d - 2)
+                chasesU16 &= ~u16(newChase[sideToMove]);
+
+            rooks[sideToMove] &= chasesU16 & flag;
+            chase[sideToMove] &= chineseLike && chasesU16 ? 0xFFFF : chasesU16;
+        }
+    }
+
+    if ((!chase[us] && !chase[them]) || (rooks[us] && rooks[them]))
+        return VALUE_DRAW;
+    if (rooks[us])
+        return mated_in(ply);
+    if (rooks[them])
+        return mate_in(ply);
+
+    return !chase[us] ? mate_in(ply) : !chase[them] ? mated_in(ply) : VALUE_DRAW;
+}
+
+
 // Calculates whether the side to move has a forced checking mate threat within the configured depth.
 // This is used only by ChineseRule.
 bool Position::has_mate_threat(Depth d) {
@@ -1667,143 +1804,6 @@ Value Position::detect_sky_cycle(int d, int ply) {
 }
 
 
-// Detects chases from state st - d to state st.
-Value Position::detect_chases(int d, int ply) {
-
-    using RR = RuleConfig::RepetitionRule;
-
-    // AllowChase only forbids perpetual check; this function is called for a non-checking cycle.
-    // NoJudgement does not assign blame for a cycle.
-    if (RuleConfig::repetitionRule == RR::ALLOW_CHASE
-        || RuleConfig::repetitionRule == RR::NO_JUDGEMENT)
-        return VALUE_DRAW;
-
-    // Grant each piece on board a unique id for each side.
-    int whiteId = 0;
-    int blackId = 0;
-    for (Square s = SQ_A0; s <= SQ_I9; ++s)
-        if (board[s] != NO_PIECE)
-            idBoard[s] = color_of(board[s]) == WHITE ? whiteId++ : blackId++;
-
-    Color us = sideToMove, them = ~us;
-
-    // ComputerRule keeps the current strict detector.
-    if (RuleConfig::repetitionRule == RR::COMPUTER)
-    {
-        u16 chase[COLOR_NB] = {0xFFFF, 0xFFFF};
-        for (int i = 0; i < d; ++i)
-        {
-            if (st->checkersBB)
-                return VALUE_DRAW;
-            else if (!chase[~sideToMove])
-            {
-                if (!chase[sideToMove])
-                    break;
-                undo_move(st->move, st->capturedPiece);
-                st = st->previous;
-            }
-            else
-            {
-                u16 after = u16(chased(~sideToMove));
-                undo_move(st->move, st->capturedPiece);
-                st = st->previous;
-                chase[sideToMove] &= after & ~u16(chased(sideToMove));
-            }
-        }
-
-        return bool(chase[us]) ^ bool(chase[them]) ? chase[us] ? mated_in(ply) : mate_in(ply)
-                                                   : VALUE_DRAW;
-    }
-
-    // Asian/Chinese/Sky/Yitian use the 2-fold chase classifier. ChineseRule and
-    // SkyRule share the "all pieces simultaneously" semantics. The chase diff is
-    // computed with ChaseMap (victim, attacker) pairs so that a victim chased by
-    // a different attacker is not confused with a continued chase by the original
-    // attacker (the "带根长捉" fix shared by all three rules). The accumulated
-    // victim mask is then consumed by each rule's own scoring below.
-    const bool chineseLike = RuleConfig::chinese_like();
-    const bool chineseRule = RuleConfig::repetitionRule == RR::CHINESE;
-
-    u16      rooks[COLOR_NB] = {0xFFFF, 0xFFFF};
-    u16      chase[COLOR_NB] = {0xFFFF, 0xFFFF};  // u16 victim-mask intersection accumulation
-    ChaseMap newChase[COLOR_NB];                  // ChaseMap (victim, attacker) per side
-    newChase[us] = chased(us);
-
-    for (int i = 0; i < d; ++i)
-    {
-        if (!chase[~sideToMove])
-        {
-            if (!chase[sideToMove])
-                break;
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-        }
-        else if (st->checkersBB
-                 || (chineseRule && RuleConfig::mateThreatDepth > 0 && has_mate_threat()))
-        {
-            // In Chinese-like rules, check/mate-threat is treated as chasing all pieces.
-            chase[~sideToMove] &= chineseLike ? 0xFFFF : 0;
-            rooks[~sideToMove] = 0;
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-        }
-        else
-        {
-            ChaseMap oldChase = chased(~sideToMove);
-            u16      flag     = 0;
-
-            // Asian-style special case: a rook pinned by a knight may itself be the chased piece.
-            if (!chineseLike && rooks[~sideToMove]
-                && (blockers_for_king(sideToMove) & pieces(sideToMove, ROOK)))
-            {
-                Bitboard knights = pinners(~sideToMove) & pieces(KNIGHT);
-                while (knights)
-                {
-                    Square   s = pop_lsb(knights);
-                    Bitboard b = between_bb(king_square(sideToMove), s) ^ s;
-                    s          = pop_lsb(b);
-                    if (piece_on(s) == make_piece(sideToMove, ROOK))
-                        flag |= 1 << idBoard[s];
-                }
-            }
-
-            undo_move(st->move, st->capturedPiece);
-            st = st->previous;
-
-            // ChaseMap diff (victim, attacker): newly created chase pairs for this move.
-            // operator& is an in-place set difference; the (void) cast keeps the side effect
-            // (chases becomes oldChase - newChase) and discards the returned reference.
-            ChaseMap chases = oldChase;
-            (void)(chases & newChase[sideToMove]);
-            u16      chasesU16    = u16(chases);  // collapse to victim mask for accumulation
-            newChase[sideToMove] = chased(sideToMove);
-
-            if (chineseLike)
-            {
-                // Chinese-like rules recompute the diff against the updated newChase.
-                chases = oldChase;
-                (void)(chases & newChase[sideToMove]);
-                chasesU16 = u16(chases);
-            }
-            else if (i == d - 2)
-                chasesU16 &= ~u16(newChase[sideToMove]);
-
-            rooks[sideToMove] &= chasesU16 & flag;
-            chase[sideToMove] &= chineseLike && chasesU16 ? 0xFFFF : chasesU16;
-        }
-    }
-
-    if ((!chase[us] && !chase[them]) || (rooks[us] && rooks[them]))
-        return VALUE_DRAW;
-    if (rooks[us])
-        return mated_in(ply);
-    if (rooks[them])
-        return mate_in(ply);
-
-    return !chase[us] ? mate_in(ply) : !chase[them] ? mated_in(ply) : VALUE_DRAW;
-}
-
-
 // Tests whether the position may end the game by rule 60, insufficient material, draw repetition,
 // perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
 bool Position::rule_judge(Value& result, int ply) {
@@ -1860,6 +1860,7 @@ bool Position::rule_judge(Value& result, int ply) {
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
+                        // Copy the current position to a rollback struct, so we don't need to do those moves again
                         Position rollback;
                         memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
                         memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
@@ -1908,9 +1909,8 @@ bool Position::rule_judge(Value& result, int ply) {
         }
     }
 
-    // Configurable natural-move rule. The Repetition Rule callback keeps this
-    // switched on for AsianRule/SkyRule/YitianRule with rule120/rule120/
-    // rule150 respectively.
+    // Configurable natural-move rule. Selecting YitianRule turns this off in the UCI callback,
+    // matching the target binary.
     if (RuleConfig::sixtyMoveRule && RuleConfig::rule60MaxPly > 0
         && st->rule60 >= RuleConfig::rule60MaxPly)
     {
@@ -2008,7 +2008,7 @@ std::optional<PositionSetError> Position::flip() {
     f += token + " ";
 
     std::transform(f.begin(), f.end(), f.begin(),
-                   [](char c) { return char(islower(c) ? toupper(c) : tolower(c)); });
+                   [](unsigned char c) { return char(islower(c) ? toupper(c) : tolower(c)); });
 
     ss >> token;
     f += token;

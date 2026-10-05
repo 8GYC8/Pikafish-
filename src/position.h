@@ -21,7 +21,6 @@
 
 #include <array>
 #include <cassert>
-#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <iosfwd>
@@ -278,11 +277,8 @@ class Position {
     Value                 detect_chases(int d, int ply = 0);
     void                  set_sky_info(int d);
     Value                 detect_sky_cycle(int d, int ply = 0);
-    // The extra bitboard b masks out checkers that should be ignored (e.g. the
-    // pre-existing checkers on our own king), so that we only flag moves that
-    // create NEW attacks on the king. Shared by all chasing detectors.
-    bool                  chase_legal(Move m, Bitboard b = 0) const;
     SkyChaseMap           sky_chased(Color c);
+    bool                  chase_legal(Move m, Bitboard b = 0) const;
     template<bool AfterMove = false>
     Key adjust_key60(Key k) const;
 

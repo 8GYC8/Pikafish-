@@ -59,8 +59,14 @@ Value Eval::evaluate(const Eval::NNUE::Network&     network,
     int material = pos.major_material();
     int v        = nnue + (nnue * i64(material) + optimism * i64(13268)) / 36139;
 
-    // Damp down the evaluation linearly when shuffling
-    v -= (v * pos.rule60_count()) / 253;
+    // Damp down the evaluation linearly as the natural-move limit approaches.
+    // Scale the divisor with the configured limit so that reaching the limit
+    // always applies the same relative damp as the rule120 baseline
+    // (120/253 ~= 47%); otherwise rule150 would over-damp late endgames
+    // (150/253 ~= 59%), flattening winning positions toward draws and
+    // inducing losing capture exchanges merely to reset the rule60 counter.
+    if (RuleConfig::rule60MaxPly > 0)
+        v -= (v * pos.rule60_count()) / (253 * RuleConfig::rule60MaxPly / 120);
 
     // Guarantee evaluation does not hit the mate range
     v = std::clamp(v, VALUE_MATED_IN_MAX_PLY + 1, VALUE_MATE_IN_MAX_PLY - 1);

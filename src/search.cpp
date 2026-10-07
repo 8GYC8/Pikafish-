@@ -297,6 +297,7 @@ bool Search::Worker::iterative_deepening() {
     multiPV = std::min(multiPV, rootMoves.size());
 
     int  searchAgainCounter = 0;
+    int  failHighRecovery   = 0;
     bool uciPvSent          = false;
 
     lowPlyHistory.fill(99);
@@ -305,11 +306,34 @@ bool Search::Worker::iterative_deepening() {
         for (int i = 0; i < UINT_16_HISTORY_SIZE; i++)
             mainHistory[c][i] = mainHistory[c][i] * 768 / 1024;
 
-    // Iterative deepening loop until requested to stop or the target depth is reached
-    while (rootDepth + 1 < MAX_PLY && !threads.stop
+    // Iterative deepening loop until requested to stop or the target depth is reached.
+    // The main thread still enters once when stop is already pending (extreme time
+    // pressure, stop/quit racing the 'go') so that the depth-1 safety iteration runs.
+    while (rootDepth + 1 < MAX_PLY
+           && (!threads.stop || (mainThread && rootDepth == 0))
            && !(limits.depth && mainThread && rootDepth >= limits.depth))
     {
+        // Stability safeguard: the main thread always completes the depth-1
+        // iteration, even if the clock is already exhausted when the search
+        // starts (ultra-bullet controls, cold-start/network-load latency) or a
+        // 'stop'/'quit' races the 'go' command. A depth-1 search costs only a
+        // few microseconds, but it guarantees every root move gets a
+        // quiescence-verified score, so we can never return an unscored move
+        // picked merely from move-generation order (which may be a blunder,
+        // e.g. an interposition that hangs a piece).
+        const bool firstIteration = bool(mainThread) && rootDepth == 0;
+        bool       savedStop      = false;
+
+        if (firstIteration && threads.stop)
+        {
+            savedStop    = true;
+            threads.stop = false;
+        }
+
         rootDepth++;
+
+        if (firstIteration)
+            firstIterationGuard = true;
 
         // Age out PV variability metric and signal the start of a new iteration.
         if (mainThread)
@@ -355,14 +379,16 @@ bool Search::Worker::iterative_deepening() {
             // high/low, re-search with a bigger window until we don't fail
             // high/low anymore.
             int failedHighCnt = 0;
+            if (!pvIdx)
+                failHighRecovery = std::max(0, failHighRecovery - 2);
             while (true)
             {
                 // Adjust the effective depth searched, but ensure at least one
                 // effective increment for every four searchAgain steps (see issue #2717).
-                Depth adjustedDepth =
-                  std::max(1, rootDepth - failedHighCnt - 3 * (searchAgainCounter + 1) / 4);
-                rootDelta = beta - alpha;
-                bestValue = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
+                Depth adjustedDepth = std::max(1, rootDepth - failedHighCnt - failHighRecovery
+                                                    - 3 * (searchAgainCounter + 1) / 4);
+                rootDelta           = beta - alpha;
+                bestValue           = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
                 // Bring the best move to the front. It is critical that sorting
                 // is done with a stable algorithm because all the values but the
@@ -374,8 +400,9 @@ bool Search::Worker::iterative_deepening() {
 
                 // If search has been stopped, we break immediately. Sorting is
                 // safe because RootMoves is still valid, although it refers to
-                // the previous iteration.
-                if (threads.stop)
+                // the previous iteration. The depth-1 safety iteration is never
+                // aborted so that every root move gets a verified score.
+                if (threads.stop && !firstIteration)
                     break;
 
                 // When failing high/low give some update before a re-search. To avoid
@@ -410,7 +437,11 @@ bool Search::Worker::iterative_deepening() {
                 assert(alpha >= -VALUE_INFINITE && beta <= VALUE_INFINITE);
             }
 
-            if (threads.stop && pvIdx)
+            // Gradually increase depth after reduced depth search
+            if (failedHighCnt > 0 && !pvIdx)
+                failHighRecovery = (failedHighCnt + 1) / 2 + 2;
+
+            if (threads.stop && !firstIteration && pvIdx)
             {
                 // In multiPV analysis we do not let aborted searches spoil mated-in/
                 // TB loss scores from a completed search in an earlier PV line.
@@ -461,13 +492,14 @@ bool Search::Worker::iterative_deepening() {
             // Sort the PV lines searched so far and update the GUI
             std::stable_sort(rootMoves.begin() + pvFirst, rootMoves.begin() + pvIdx + 1);
 
-            if (mainThread && !threads.stop && (pvIdx + 1 == multiPV || nodes > NODES_LIMIT_OUTPUT))
+            if (mainThread && (!threads.stop || firstIteration)
+                && (pvIdx + 1 == multiPV || nodes > NODES_LIMIT_OUTPUT))
             {
                 main_manager()->output_pv(*this, threads, tt, rootDepth);
                 uciPvSent = (pvIdx + 1 == multiPV);
             }
 
-            if (threads.stop)
+            if (threads.stop && !firstIteration)
                 break;
         }
 
@@ -575,6 +607,18 @@ bool Search::Worker::iterative_deepening() {
             }
             else
                 threads.increaseDepth = mainThread->ponder || elapsedTime <= totalTime * 0.26;
+        }
+
+        // End of the depth-1 safety iteration: re-enable time checks and re-arm
+        // a stop that was already pending when the search started (e.g. a
+        // 'stop'/'quit' racing the 'go'), now that every root move has a valid
+        // quiescence-verified score and rootMoves[0] is trustworthy.
+        if (firstIteration)
+        {
+            firstIterationGuard = false;
+
+            if (savedStop && !threads.stop)
+                threads.stop = true;
         }
 
         mainThread->iterValue[iterIdx] = bestValue;
@@ -1335,8 +1379,10 @@ moves_loop:  // When in check, search starts here
         // Step 22. Check for a new best move
         // If a stop occurred, the value of the search cannot be trusted, and we
         // return immediately without updating the best move, principal variation
-        // or transposition table.
-        if (threads.stop.load(std::memory_order_relaxed))
+        // or transposition table. Exception: the guaranteed depth-1 safety
+        // iteration of the main thread must always run to completion, otherwise
+        // we could return a move that was never evaluated.
+        if (threads.stop.load(std::memory_order_relaxed) && !firstIterationGuard)
             return VALUE_ZERO;
 
         if (rootNode)
@@ -1949,6 +1995,11 @@ void update_quiet_histories(
 // Used to print debug info and, more importantly, to detect
 // when we are out of available time and thus stop the search.
 void SearchManager::check_time(Search::Worker& worker) {
+    // Never abort the guaranteed depth-1 safety iteration. It takes only a
+    // few microseconds and ensures the returned move has been evaluated.
+    if (worker.firstIterationGuard)
+        return;
+
     if (--callsCnt > 0)
         return;
 

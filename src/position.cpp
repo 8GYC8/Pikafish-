@@ -1858,6 +1858,39 @@ bool Position::rule_judge(Value& result, int ply) {
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
+                        // Mixed check/idle repetition cycles. Asian and Yitian rules
+                        // treat two or more checks by one side inside a single
+                        // repetition cycle ("two checks one idle", alternating piece
+                        // types included) as a perpetual-check offense: that side
+                        // loses even though not every move of the cycle checks, and
+                        // both sides offending stays a draw. Cycles where each side
+                        // gives at most one check fall through to the chase
+                        // classifiers below.
+                        if (RuleConfig::repetitionRule == RR::YITIAN
+                            || RuleConfig::repetitionRule == RR::ASIAN)
+                        {
+                            int usChecks   = 0;
+                            int themChecks = 0;
+                            const StateInfo* q = st;
+                            for (int k = 0; k < i; ++k, q = q->previous)
+                                if (q->checkersBB)
+                                {
+                                    if (k & 1)
+                                        ++usChecks;    // odd depth: our move gave check
+                                    else
+                                        ++themChecks;  // even depth: their move gave check
+                                }
+
+                            if (usChecks >= 2 || themChecks >= 2)
+                            {
+                                result = usChecks >= 2 && themChecks >= 2 ? VALUE_DRAW
+                                       : usChecks >= 2 ? mated_in(ply)
+                                                       : mate_in(ply);
+                                apply_draw_rule(true);
+                                return true;
+                            }
+                        }
+
                         Position rollback;
                         memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
                         memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));

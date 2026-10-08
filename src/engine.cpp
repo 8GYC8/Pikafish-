@@ -179,7 +179,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     // crash in the original combo parsing is fixed in ucioption.cpp anyway.
     options.add(  //
       "ScoreType",
-      Option("Elo var PawnValueNormalized var Raw", "Elo", [](const Option& o) {
+      Option("Elo var Elo var PawnValueNormalized var Raw", "Elo", [](const Option& o) {
           UCIEngine::scoreTypeMode = o == "Elo"  ? UCIEngine::ScoreTypeMode::Elo
                                    : o == "Raw" ? UCIEngine::ScoreTypeMode::RAW
                                                 : UCIEngine::ScoreTypeMode::PAWN_VALUE_NORMALIZED;

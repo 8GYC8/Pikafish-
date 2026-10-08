@@ -9,10 +9,13 @@
 
 namespace Stockfish::Rules {
 
+// Default rule set: YitianRule, sixty move Rule enabled with a 150-ply limit
+// (AsianRule/SkyRule default to a 120-ply limit).
+// Kept in sync with the RuleConfig defaults in position.cpp.
 RepetitionRule repetitionRule = RepetitionRule::YITIAN;
 DrawRule       drawRule       = DrawRule::NONE;
-bool           sixtyMoveRule = false;
-int            rule60MaxPly  = 134;
+bool           sixtyMoveRule  = true;
+int            rule60MaxPly   = 150;
 int            mateThreatDepth = 10;
 
 }  // namespace Stockfish::Rules

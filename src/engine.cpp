@@ -172,7 +172,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           return std::nullopt;
       }));
 
-    options.add("UCI_ShowWDL", Option(false));
+    options.add("UCI_ShowWDL", Option(true));
 
     // Display-only score conversion selector (kept from the PK928 lineage).
     // Note: the defaultValue lists each token exactly once; the duplicated-token

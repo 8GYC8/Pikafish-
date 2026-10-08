@@ -898,7 +898,10 @@ Value Search::Worker::search(
 
         // Partial workaround for the graph history interaction problem
         // For high rule60 counts don't produce transposition table cutoffs.
-        if (pos.rule60_count() < RuleConfig::rule60MaxPly - 4)
+        // The Rule60MaxPly is bounded to 90-150, so rule60MaxPly <= 0
+        // only occurs if configured externally; in that case there is no
+        // high-counter region and cutoffs are always allowed.
+        if (RuleConfig::rule60MaxPly <= 0 || pos.rule60_count() < RuleConfig::rule60MaxPly - 4)
         {
             if (depth >= 7 && ttData.move && pos.pseudo_legal(ttData.move) && pos.legal(ttData.move)
                 && !is_decisive(ttData.value))

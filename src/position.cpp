@@ -48,13 +48,13 @@ namespace Stockfish {
 using namespace Attacks;
 
 namespace RuleConfig {
-// Defaults: YitianRule with rule140, Sixty Move Rule off.
+// Defaults: YitianRule with rule150, Sixty Move Rule on.
 // AsianRule and SkyRule default to rule120 with Sixty Move Rule on (enforced in engine.cpp couplings).
 RepetitionRule repetitionRule  = RepetitionRule::YITIAN;
 DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;
-bool           sixtyMoveRule   = false;
-int            rule60MaxPly    = 140;
+bool           sixtyMoveRule   = true;
+int            rule60MaxPly    = 150;
 }  // namespace RuleConfig
 
 namespace Zobrist {

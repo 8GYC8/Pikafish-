@@ -129,7 +129,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
                  // Rule60MaxPly and Sixty Move Rule couplings:
                  // AsianRule and SkyRule default to rule120 with Sixty Move Rule on,
-                 // YitianRule defaults to rule140 with Sixty Move Rule off.
+                 // YitianRule defaults to rule150 with Sixty Move Rule on.
                  if (RuleConfig::repetitionRule == RR::ASIAN
                      || RuleConfig::repetitionRule == RR::SKY)
                  {
@@ -138,8 +138,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                  }
                  else if (RuleConfig::repetitionRule == RR::YITIAN)
                  {
-                     RuleConfig::rule60MaxPly  = 140;
-                     RuleConfig::sixtyMoveRule = false;
+                     RuleConfig::rule60MaxPly  = 150;
+                     RuleConfig::sixtyMoveRule = true;
                  }
 
                  return std::nullopt;
@@ -160,20 +160,34 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
              }));
 
     options.add(  //
-      "Sixty Move Rule", Option(false, [](const Option& o) {
-          RuleConfig::sixtyMoveRule =
-            int(o) != 0 && RuleConfig::repetitionRule != RuleConfig::RepetitionRule::YITIAN;
+      "Sixty Move Rule", Option(true, [](const Option& o) {
+          RuleConfig::sixtyMoveRule = int(o) != 0;
           return std::nullopt;
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(140, 90, 155, [](const Option& o) {
-          // Adjustable 90-155 (default rule120 for AsianRule/SkyRule, rule140 for YitianRule).
+      "Rule60MaxPly", Option(150, 90, 150, [](const Option& o) {
+          // Adjustable 90-150 (default rule120 for AsianRule/SkyRule, rule150 for YitianRule).
           RuleConfig::rule60MaxPly = int(o);
           return std::nullopt;
       }));
 
     options.add("UCI_ShowWDL", Option(false));
+
+    // Display-only score conversion selector (kept from the PK928 lineage).
+    // Note: the defaultValue lists each token exactly once; the duplicated-token
+    // crash in the original combo parsing is fixed in ucioption.cpp anyway.
+    options.add(  //
+      "ScoreType",
+      Option("Elo var PawnValueNormalized var Raw", "Elo", [](const Option& o) {
+          UCIEngine::scoreTypeMode = o == "Elo"  ? UCIEngine::ScoreTypeMode::Elo
+                                   : o == "Raw" ? UCIEngine::ScoreTypeMode::RAW
+                                                : UCIEngine::ScoreTypeMode::PAWN_VALUE_NORMALIZED;
+          return std::nullopt;
+      }));
+
+    // Referenced by uci.cpp's PV output (adds the "wdl" field when enabled).
+    options.add("LU_Output", Option(true));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {

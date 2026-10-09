@@ -1802,9 +1802,21 @@ Value Position::detect_chases(int d, int ply) {
 }
 
 
+// A check-mixed repetition (one check one idle) is legal per se, but while the
+// no-capture maneuver is still young, and this exact position key is only
+// repeating for the first time (filter count 1), we report it as a "soft"
+// draw: the caller keeps searching instead of treating the repetition as a
+// terminal, so an outermost two-checks-one-idle cycle a few plies later stays
+// visible. A genuine legal one-check-one-idle loop revisits the SAME key
+// repeatedly and therefore turns into a hard draw at its second repeat
+// without extra search cost.
+namespace {
+constexpr int SoftRepetitionPly = 30;
+}
+
 // Tests whether the position may end the game by rule 60, insufficient material, draw repetition,
 // perpetual check repetition or perpetual chase repetition that allows a player to claim a game result.
-bool Position::rule_judge(Value& result, int ply) {
+bool Position::rule_judge(Value& result, int ply, bool* softDraw) {
 
     using RR = RuleConfig::RepetitionRule;
     using DR = RuleConfig::DrawRule;
@@ -1858,21 +1870,28 @@ bool Position::rule_judge(Value& result, int ply) {
                         result = VALUE_DRAW;
                     else if (!checkThem && !checkUs)
                     {
-                        // Mixed check/idle repetition cycles. Asian and Yitian rules
-                        // treat two or more checks by one side inside a single
-                        // repetition cycle ("two checks one idle", alternating piece
-                        // types included) as a perpetual-check offense: that side
-                        // loses even though not every move of the cycle checks, and
-                        // both sides offending stays a draw. Cycles where each side
-                        // gives at most one check fall through to the chase
-                        // classifiers below.
+                        int judgeCycle = i;
+
                         if (RuleConfig::repetitionRule == RR::YITIAN
                             || RuleConfig::repetitionRule == RR::ASIAN)
                         {
+                            // Mixed check/idle repetition cycles. Adjudicate over the
+                            // LONGEST equal-key cycle inside the current no-capture
+                            // maneuver, not the shortest one: a nested repeat can be a
+                            // legal one-check-one-idle loop (e.g. rook idle/check) while
+                            // the outermost repeat is a forbidden two-checks-one-idle
+                            // loop (checks delivered by alternating pieces such as a
+                            // rook and a cannon). Returning the short draw first used to
+                            // prune the search before the outer loss became visible.
+                            const StateInfo* qx = st->previous;
+                            for (int k = 1; k <= end; ++k, qx = qx->previous)
+                                if ((k & 1) == 0 && k > i && qx->key == st->key)
+                                    judgeCycle = k;
+
                             int usChecks   = 0;
                             int themChecks = 0;
                             const StateInfo* q = st;
-                            for (int k = 0; k < i; ++k, q = q->previous)
+                            for (int k = 0; k < judgeCycle; ++k, q = q->previous)
                                 if (q->checkersBB)
                                 {
                                     if (k & 1)
@@ -1896,7 +1915,30 @@ bool Position::rule_judge(Value& result, int ply) {
                         memcpy((void*) rollback.idBoard, (const void*) idBoard, sizeof(idBoard));
                         result = RuleConfig::repetitionRule == RR::SKY
                                ? rollback.detect_sky_cycle(i, ply)
-                               : rollback.detect_chases(i, ply);
+                               : rollback.detect_chases(judgeCycle, ply);
+
+                        // Legal one-check-one-idle within a young maneuver: expose it as
+                        // a soft draw so the main search can look a few plies further and
+                        // discover an outermost two-checks-one-idle closure, leaving the
+                        // maneuver early at the real evaluation instead of cliff-diving
+                        // when the loss can no longer be avoided.
+                        if (softDraw && result == VALUE_DRAW
+                            && (RuleConfig::repetitionRule == RR::YITIAN
+                                || RuleConfig::repetitionRule == RR::ASIAN)
+                            && filter[st->key] == 1
+                            && st->pliesFromNull <= SoftRepetitionPly)
+                        {
+                            bool windowHasCheck = false;
+                            const StateInfo* q = st;
+                            for (int k = 0; k < judgeCycle; ++k, q = q->previous)
+                                if (q->checkersBB)
+                                {
+                                    windowHasCheck = true;
+                                    break;
+                                }
+                            if (windowHasCheck)
+                                *softDraw = true;
+                        }
                     }
                     else
                         result = !checkUs ? mate_in(ply)

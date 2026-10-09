@@ -243,7 +243,7 @@ class Position {
     // Other properties of the position
     Color side_to_move() const;
     int   game_ply() const;
-    bool  rule_judge(Value& result, int ply = 0, bool* softDraw = nullptr);
+    bool  rule_judge(Value& result, int ply = 0);
     int   rule60_count() const;
     // chased() returns a ChaseMap (victim, attacker) pair set so that the
     // perpetual-chase accumulation can correctly verify the SAME attacker keeps

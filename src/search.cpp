@@ -779,16 +779,8 @@ Value Search::Worker::search(
     {
         // Step 2. Check for aborted search or repetition
         Value result = VALUE_NONE;
-        bool  softDraw = false;
-        if (pos.rule_judge(result, ss->ply, &softDraw)
-            && !(result == VALUE_DRAW && softDraw))
+        if (pos.rule_judge(result, ss->ply))
             return result == VALUE_DRAW ? value_draw(nodes) : result;
-        // A young check-mixed repetition (legal one-check-one-idle that may still
-        // grow into a forbidden two-checks-one-idle loop) is not terminal here:
-        // keep searching so an outermost rule loss and the real evaluation of
-        // leaving the maneuver are visible early, avoiding late score cliffs.
-        if (softDraw)
-            result = VALUE_NONE;
         if (result != VALUE_NONE)
         {
             assert(result != VALUE_DRAW);

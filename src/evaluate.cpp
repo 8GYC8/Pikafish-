@@ -59,12 +59,8 @@ Value Eval::evaluate(const Eval::NNUE::Network&     network,
     int material = pos.major_material();
     int v        = nnue + (nnue * i64(material) + optimism * i64(13268)) / 36139;
 
-    // Damp down the evaluation linearly when shuffling.
-    // The damping denominator scales with rule60MaxPly so that the evaluation
-    // is fully damped at the same relative depth regardless of the configured
-    // rule. Formula: 2 * rule60MaxPly - 15 (yields 253 for the original 134,
-    // 285 for the current 150).
-    v -= (v * pos.rule60_count()) / (2 * RuleConfig::rule60MaxPly - 15);
+    // Damp down the evaluation linearly when shuffling
+    v -= (v * pos.rule60_count()) / 253;
 
     // Guarantee evaluation does not hit the mate range
     v = std::clamp(v, VALUE_MATED_IN_MAX_PLY + 1, VALUE_MATE_IN_MAX_PLY - 1);

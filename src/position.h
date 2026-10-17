@@ -65,6 +65,7 @@ extern DrawRule       drawRule;
 extern int            mateThreatDepth;
 extern bool           sixtyMoveRule;
 extern int            rule60MaxPly;
+extern int            repetitionPenalty;
 
 inline bool chinese_like() {
     return repetitionRule == RepetitionRule::CHINESE || repetitionRule == RepetitionRule::SKY;

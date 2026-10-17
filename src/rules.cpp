@@ -14,6 +14,5 @@ DrawRule       drawRule       = DrawRule::NONE;
 bool           sixtyMoveRule = false;
 int            rule60MaxPly  = 134;
 int            mateThreatDepth = 10;
-int            repetitionPenalty = 20;
 
 }  // namespace Stockfish::Rules

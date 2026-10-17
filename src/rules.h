@@ -33,7 +33,6 @@ extern DrawRule       drawRule;
 extern bool           sixtyMoveRule;
 extern int            rule60MaxPly;
 extern int            mateThreatDepth;
-extern int            repetitionPenalty;
 
 inline bool chinese_rule() { return repetitionRule == RepetitionRule::CHINESE; }
 inline bool sky_rule() { return repetitionRule == RepetitionRule::SKY; }

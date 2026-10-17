@@ -55,6 +55,7 @@ DrawRule       drawRule        = DrawRule::NONE;
 int            mateThreatDepth = 10;
 bool           sixtyMoveRule   = false;
 int            rule60MaxPly    = 140;
+int            repetitionPenalty = 20;
 }  // namespace RuleConfig
 
 namespace Zobrist {

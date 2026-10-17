@@ -37,7 +37,6 @@
 #include "nnue/network.h"
 #include "nnue/nnue_accumulator.h"
 #include "position.h"
-#include "rules.h"
 #include "thread.h"
 #include "timeman.h"
 #include "tt.h"
@@ -119,7 +118,7 @@ void update_correction_history(const Position& pos,
 // Add a small random component to draw evaluations to avoid 3-fold blindness.
 // Also apply repetition penalty to discourage the engine from entering cycles.
 Value value_draw(usize nodes) {
-    return VALUE_DRAW - 1 + Value(nodes & 0x2) - Value(Rules::repetitionPenalty);
+    return VALUE_DRAW - 1 + Value(nodes & 0x2) - Value(RuleConfig::repetitionPenalty);
 }
 Value value_to_tt(Value v, int ply);
 Value value_from_tt(Value v, int ply, int r60c);

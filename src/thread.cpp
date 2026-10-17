@@ -45,15 +45,16 @@ namespace Stockfish {
 
 // Constructor launches the thread and waits until it goes to sleep
 // in idle_loop(). Note that 'searching' and 'exit' should be already set.
-Thread::Thread(Search::SharedState&                   sharedState,
-               std::unique_ptr<Search::SearchManager> sm,
-               usize                                  n,
-               usize                                  numaN,
-               usize                                  totalNumaCount,
-               OptionalThreadToNumaNodeBinder         binder) :
+Thread::Thread(Search::SharedState&                    sharedState,
+               std::unique_ptr<Search::ISearchManager> sm,
+               usize                                   n,
+               usize                                   numaN,
+               usize                                   totalNumaCount,
+               OptionalThreadToNumaNodeBinder          binder) :
     idx(n),
     idxInNuma(numaN),
     totalNuma(totalNumaCount),
+    nthreads(sharedState.options["Threads"]),
     stdThread(
       create_native_thread(NativeThreadOptions{}.setLargeStack(true), &Thread::idle_loop, this)) {
 
@@ -224,8 +225,10 @@ void ThreadPool::set(const NumaConfig&                           numaConfig,
             const usize     threadId      = threads.size();
             const NumaIndex numaId        = doBindThreads ? boundThreadToNumaNode[threadId] : 0;
             auto            create_thread = [&]() {
-                auto manager =
-                  threadId == 0 ? std::make_unique<Search::SearchManager>(updateContext) : nullptr;
+                auto manager = threadId == 0
+                               ? std::unique_ptr<Search::ISearchManager>(
+                                   std::make_unique<Search::SearchManager>(updateContext))
+                               : std::make_unique<Search::NullSearchManager>();
 
                 // When not binding threads we want to force all access to happen
                 // from the same NUMA node, because in case of NUMA replicated memory
@@ -308,7 +311,7 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states, Search::Lim
     }
 
     if (rootMoves.empty())
-        for (const auto& m : MoveList<ALL>(pos))
+        for (const auto& m : MoveList<LEGAL>(pos))
             rootMoves.emplace_back(m);
 
     // After ownership transfer 'states' becomes empty, so if we stop the search

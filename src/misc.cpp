@@ -55,9 +55,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Version number or dev.
-constexpr std::string_view version = "dev";
-
 // Our fancy logging facility. The trick here is to replace cin.rdbuf() and
 // cout.rdbuf() with two Tie objects that tie cin and cout to a file stream. We
 // can toggle the logging of std::cout and std::cin at runtime whilst preserving
@@ -129,56 +126,40 @@ class Logger {
 }  // namespace
 
 
-// Returns the full name of the current Pikafish version.
-//
-// For local dev compiles we try to append the commit SHA and
-// commit date from git. If that fails only the local compilation
-// date is set and "nogit" is specified:
-//      Pikafish dev-YYYYMMDD-SHA
-//      or
-//      Pikafish dev-YYYYMMDD-nogit
-//
-// For releases (non-dev builds) we only include the version number:
-//      Pikafish version
+// Returns the full name of the current Pikafish version:
+//      Pikafish YYYY-MM-DD
 std::string engine_version_info() {
-    std::stringstream ss;
-    ss << "Pikafish " << version << std::setfill('0');
+    std::string date;
 
-    if constexpr (version == "dev")
-    {
-        ss << "-";
 #ifdef GIT_DATE
-        ss << stringify(GIT_DATE);
+    date = stringify(GIT_DATE);  // YYYYMMDD, provided by the Makefile
 #else
-        constexpr std::string_view months("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec");
+    constexpr std::string_view months("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec");
 
-        std::string       month, day, year;
-        std::stringstream date(__DATE__);  // From compiler, format is "Sep 21 2008"
+    std::string       month, day, year;
+    std::stringstream dateStream(__DATE__);  // From compiler, format is "Sep 21 2008"
 
-        date >> month >> day >> year;
-        ss << year << std::setw(2) << std::setfill('0') << (1 + months.find(month) / 4)
-           << std::setw(2) << std::setfill('0') << day;
+    dateStream >> month >> day >> year;
+
+    std::string mm = std::to_string(1 + months.find(month) / 4);
+    if (mm.size() < 2)
+        mm = "0" + mm;
+    if (day.size() < 2)
+        day = "0" + day;
+
+    date = year + mm + day;
 #endif
 
-#ifdef GIT_DIFFINDEX
-        ss << "-m";
-#endif
+    // Convert YYYYMMDD into YYYY-MM-DD.
+    if (date.size() == 8)
+        date = date.substr(0, 4) + "-" + date.substr(4, 2) + "-" + date.substr(6, 2);
 
-        ss << "-";
-
-#ifdef GIT_SHA
-        ss << stringify(GIT_SHA);
-#else
-        ss << "nogit";
-#endif
-    }
-
-    return ss.str();
+    return "Pikafish " + date;
 }
 
 std::string engine_info(bool to_uci) {
     return engine_version_info() + (to_uci ? "\nid author " : " by ")
-         + "the Pikafish developers (see AUTHORS file)";
+         + "the Pikafish developers";
 }
 
 
@@ -345,33 +326,27 @@ std::array<DebugExtremes, MaxDebugSlots> extremes;
 
 }  // namespace
 
-bool dbg_hit_on(bool cond, int slot) {
+void dbg_hit_on(bool cond, int slot) {
 
     ++hit.at(slot)[0];
     if (cond)
         ++hit.at(slot)[1];
-
-    return cond;
 }
 
-i64 dbg_mean_of(i64 value, int slot) {
+void dbg_mean_of(i64 value, int slot) {
 
     ++mean.at(slot)[0];
     mean.at(slot)[1] += value;
-
-    return value;
 }
 
-i64 dbg_stdev_of(i64 value, int slot) {
+void dbg_stdev_of(i64 value, int slot) {
 
     ++stdev.at(slot)[0];
     stdev.at(slot)[1] += value;
     stdev.at(slot)[2] += value * value;
-
-    return value;
 }
 
-i64 dbg_extremes_of(i64 value, int slot) {
+void dbg_extremes_of(i64 value, int slot) {
     ++extremes.at(slot)[0];
 
     i64 current_max = extremes.at(slot)[1].load();
@@ -381,8 +356,6 @@ i64 dbg_extremes_of(i64 value, int slot) {
     i64 current_min = extremes.at(slot)[2].load();
     while (current_min > value && !extremes.at(slot)[2].compare_exchange_weak(current_min, value))
     {}
-
-    return value;
 }
 
 void dbg_correl_of(i64 value1, i64 value2, int slot) {
@@ -408,7 +381,9 @@ void dbg_print() {
 
     for (int i = 0; i < MaxDebugSlots; ++i)
         if ((n = mean[i][0]))
+        {
             std::cerr << "Mean #" << i << ": Total " << n << " Mean " << E(mean[i][1]) << std::endl;
+        }
 
     for (int i = 0; i < MaxDebugSlots; ++i)
         if ((n = stdev[i][0]))
@@ -419,8 +394,10 @@ void dbg_print() {
 
     for (int i = 0; i < MaxDebugSlots; ++i)
         if ((n = extremes[i][0]))
+        {
             std::cerr << "Extremity #" << i << ": Total " << n << " Min " << extremes[i][2]
                       << " Max " << extremes[i][1] << std::endl;
+        }
 
     for (int i = 0; i < MaxDebugSlots; ++i)
         if ((n = correl[i][0]))
@@ -500,8 +477,6 @@ u64 hash_bytes(const char* data, usize size) {
 // Trampoline helper to avoid moving Logger to misc.h
 void start_logger(const fs::path& fname) { Logger::start(fname); }
 
-
-// Convert a wide string to an UTF8 string
 std::string utf8_from_wstring(std::wstring_view s) {
 #ifdef _WIN32
     if (s.empty())
@@ -520,8 +495,6 @@ std::string utf8_from_wstring(std::wstring_view s) {
 #endif
 }
 
-
-// This utility allows us to handle filenames and paths with UTF8 encoding
 fs::path path_from_utf8(const std::string& path) {
 #ifdef _WIN32
     int u8len = static_cast<int>(path.size());
@@ -546,8 +519,6 @@ fs::path path_from_utf8(const std::string& path) {
 #endif
 }
 
-
-// Constructor for the CommandLine class
 CommandLine::CommandLine(int _argc, char** _argv) :
     argc(_argc),
     argv(_argv) {
@@ -571,20 +542,18 @@ CommandLine::CommandLine(int _argc, char** _argv) :
 }
 
 
-// Read a numerical value from the command line
 std::optional<usize> str_to_size_t(const std::string& s) {
     if (s.empty() || s[0] == '-')
         return std::nullopt;
     errno                           = 0;
     char*                    endptr = nullptr;
     const unsigned long long value  = std::strtoull(s.c_str(), &endptr, 10);
-    if (errno == ERANGE || (*endptr != '\0' && !std::isspace(static_cast<unsigned char>(*endptr)))
+    if (errno == ERANGE || (*endptr != '\0' && !std::isspace(*endptr))
         || value > std::numeric_limits<usize>::max())
         return std::nullopt;
     return static_cast<usize>(value);
 }
 
-// Read the given file as bytes (returns std::nullopt if the file does not exist)
 std::optional<std::string> read_file_to_string(const std::string& path) {
     std::ifstream f(path, std::ios_base::binary);
     if (!f)
@@ -592,21 +561,14 @@ std::optional<std::string> read_file_to_string(const std::string& path) {
     return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
-// Remove all spaces from a string
 void remove_whitespace(std::string& s) {
-    s.erase(std::remove_if(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); }),
-            s.end());
+    s.erase(std::remove_if(s.begin(), s.end(), [](char c) { return std::isspace(c); }), s.end());
 }
 
-// Test if a string has only spaces
 bool is_whitespace(std::string_view s) {
-    return std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); });
+    return std::all_of(s.begin(), s.end(), [](char c) { return std::isspace(c); });
 }
 
-
-// Return the directory where our Stockfish binary sits. This is useful,
-// because when the NNUE network is not embedded in the binary, this directory
-// is one of the locations where we look for the NNUE file.
 fs::path CommandLine::get_binary_directory(fs::path argv0) {
 
 #ifdef _WIN32
@@ -627,8 +589,8 @@ fs::path CommandLine::get_binary_directory(fs::path argv0) {
     return binaryDirectory;
 }
 
+fs::path CommandLine::get_working_directory() { return std::filesystem::current_path(); }
 
-// On Windows, tell the console to use UTF8 encoding
 void set_console_utf8() {
 #ifdef _WIN32
     SetConsoleCP(CP_UTF8);

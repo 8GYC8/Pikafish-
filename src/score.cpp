@@ -30,7 +30,9 @@ Score::Score(Value v, const Position& pos) {
     assert(-VALUE_INFINITE < v && v < VALUE_INFINITE);
 
     if (!is_decisive(v))
+    {
         score = InternalUnits{UCIEngine::to_cp(v, pos)};
+    }
     else
     {
         auto distance = VALUE_MATE - std::abs(v);

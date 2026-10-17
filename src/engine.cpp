@@ -56,7 +56,7 @@ constexpr NumaAutoPolicy DefaultNumaPolicy = BundledL3Policy{32};
 
 Engine::Engine(std::optional<std::filesystem::path> path) :
     binaryDirectory(path ? CommandLine::get_binary_directory(*path) : std::filesystem::path{}),
-    numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
+    numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
     states(new std::deque<StateInfo>(1)),
     threads(),
     networkFile{std::nullopt, ""},
@@ -71,7 +71,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
       }));
 
     options.add(  //
-      "NumaPolicy", Option("auto", [this](const Option& o) {
+      "NumaPolicy", Option("hardware", [this](const Option& o) {
           if (!set_numa_config_from_option(o))
               return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
           return numa_config_information_as_string() + "\n"
@@ -105,6 +105,79 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add("Move Overhead", Option(10, 0, 5000));
 
     options.add("nodestime", Option(0, 0, 10000));
+
+    options.add(  //
+      "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
+          RuleConfig::mateThreatDepth = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Repetition Penalty", Option(20, 0, 100, [](const Option& o) {
+          RuleConfig::repetitionPenalty = int(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Repetition Rule",
+      Option("YitianRule var AsianRule var ChineseRule var SkyRule var ComputerRule var YitianRule var AllowChase var NoJudgement",
+             "YitianRule", [](const Option& o) {
+                 using RR = RuleConfig::RepetitionRule;
+
+                 RuleConfig::repetitionRule =
+                   o == "ChineseRule"  ? RR::CHINESE
+                   : o == "SkyRule"    ? RR::SKY
+                   : o == "ComputerRule" ? RR::COMPUTER
+                   : o == "YitianRule" ? RR::YITIAN
+                   : o == "AllowChase" ? RR::ALLOW_CHASE
+                   : o == "NoJudgement" ? RR::NO_JUDGEMENT
+                                        : RR::ASIAN;
+
+                 // Rule60MaxPly and Sixty Move Rule couplings:
+                 // AsianRule and SkyRule default to rule120 with Sixty Move Rule on,
+                 // YitianRule defaults to rule140 with Sixty Move Rule off.
+                 if (RuleConfig::repetitionRule == RR::ASIAN
+                     || RuleConfig::repetitionRule == RR::SKY)
+                 {
+                     RuleConfig::rule60MaxPly  = 120;
+                     RuleConfig::sixtyMoveRule = true;
+                 }
+                 else if (RuleConfig::repetitionRule == RR::YITIAN)
+                 {
+                     RuleConfig::rule60MaxPly  = 140;
+                     RuleConfig::sixtyMoveRule = false;
+                 }
+
+                 return std::nullopt;
+             }));
+
+    options.add(  //
+      "Draw Rule",
+      Option("None var None var DrawAsBlackWin var DrawAsRedWin var DrawRepAsBlackWin var DrawRepAsRedWin",
+             "None", [](const Option& o) {
+                 using DR = RuleConfig::DrawRule;
+                 RuleConfig::drawRule =
+                   o == "DrawAsBlackWin"      ? DR::BLACK_WIN
+                   : o == "DrawAsRedWin"      ? DR::RED_WIN
+                   : o == "DrawRepAsBlackWin" ? DR::REP_BLACK_WIN
+                   : o == "DrawRepAsRedWin"   ? DR::REP_RED_WIN
+                                               : DR::NONE;
+                 return std::nullopt;
+             }));
+
+    options.add(  //
+      "Sixty Move Rule", Option(false, [](const Option& o) {
+          RuleConfig::sixtyMoveRule =
+            int(o) != 0 && RuleConfig::repetitionRule != RuleConfig::RepetitionRule::YITIAN;
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Rule60MaxPly", Option(140, 90, 155, [](const Option& o) {
+          // Adjustable 90-155 (default rule120 for AsianRule/SkyRule, rule140 for YitianRule).
+          RuleConfig::rule60MaxPly = int(o);
+          return std::nullopt;
+      }));
 
     options.add("UCI_ShowWDL", Option(false));
 
@@ -190,12 +263,18 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
 
 bool Engine::set_numa_config_from_option(const std::string& o) {
     if (o == "auto" || o == "system")
+    {
         numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy));
+    }
     else if (o == "hardware")
+    {
         // Don't respect affinity set in the system.
         numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy, false));
+    }
     else if (o == "none")
+    {
         numaContext.set_numa_config(NumaConfig{});
+    }
     else
     {
         auto parsed = NumaConfig::from_string(o);
@@ -239,16 +318,26 @@ void Engine::verify_network() const {
         const auto [status, error] = statuses[i];
         std::string message        = "Network replica " + std::to_string(i + 1) + ": ";
         if (status == SystemWideSharedConstantAllocationStatus::NoAllocation)
+        {
             message += "No allocation.";
+        }
         else if (status == SystemWideSharedConstantAllocationStatus::LocalMemory)
+        {
             message += "Local memory.";
+        }
         else if (status == SystemWideSharedConstantAllocationStatus::SharedMemory)
+        {
             message += "Shared memory.";
+        }
         else
+        {
             message += "Unknown status.";
+        }
 
         if (error.has_value())
+        {
             message += " " + *error;
+        }
 
         onVerifyNetwork(message);
     }
@@ -291,6 +380,13 @@ const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 
 std::string Engine::fen() const { return pos.fen(); }
+
+std::pair<bool, Value> Engine::debug_rule_check() {
+    Value result = VALUE_NONE;
+    bool terminal = pos.rule_judge(result, 0);
+    return {terminal, result};
+}
+
 
 std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
 

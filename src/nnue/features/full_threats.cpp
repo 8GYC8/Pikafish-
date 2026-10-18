@@ -32,6 +32,12 @@
 
 namespace Stockfish::Eval::NNUE::Features {
 
+// This fork keeps attack helpers in namespace Attacks (upstream master: Bitboards)
+using Attacks::attacks_bb;
+using Attacks::PseudoAttacks;
+using Attacks::sliding_attack;
+using Attacks::unconstrained_attacks_bb;
+
 // Lookup array for indexing threats
 auto ThreatOffsets = []() {
     MultiArray<uint16_t, PIECE_NB, SQUARE_NB, SQUARE_NB, PIECE_NB> ThreatOffsets{};
@@ -77,7 +83,7 @@ auto ThreatOffsets = []() {
                     attacks = attacks_bb<PAWN>(from, color_of(attacker));
                 else if (pt == CANNON)
                     attacks =
-                      Bitboards::sliding_attack<CANNON>(from, unconstrained_attacks_bb<KING>(from));
+                      sliding_attack<CANNON>(from, unconstrained_attacks_bb<KING>(from));
                 else
                     attacks = PseudoAttacks[pt][from];
 

@@ -313,7 +313,7 @@ fused(const typename VecWrapper::type& in, const T& operand, const Ts&... operan
     acc = _mm256_dpbusd_epi32(acc, a, b);
     #else
     __m256i product0 = _mm256_maddubs_epi16(a, b);
-    product0         = _mm256_madd_epi16(product0, _mm512_set1_epi16(1));
+    product0         = _mm256_madd_epi16(product0, _mm256_set1_epi16(1));
     acc              = _mm256_add_epi32(acc, product0);
     #endif
 }

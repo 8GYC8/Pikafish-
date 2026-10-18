@@ -320,11 +320,7 @@ using DirtyThreatList = ValueList<DirtyThreat, 64>;
 
 struct DirtyThreats {
     DirtyThreatList list;
-};
-
-struct Dirties {
-    DirtyPiece   dirtyPiece;
-    DirtyThreats dirtyThreats;
+    bool            requires_refresh[2];
 };
 
     #define ENABLE_INCR_OPERATORS_ON(T) \

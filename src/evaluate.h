@@ -36,14 +36,14 @@ namespace Eval {
 #define EvalFileDefaultName "pikafish.nnue"
 
 namespace NNUE {
-class Network;
+struct Networks;
 struct AccumulatorCaches;
 class AccumulatorStack;
 }
 
-std::string trace(Position& pos, const Eval::NNUE::Network& network);
+std::string trace(Position& pos, const Eval::NNUE::Networks& networks);
 
-Value evaluate(const NNUE::Network&           network,
+Value evaluate(const NNUE::Networks&          networks,
                const Position&                pos,
                Eval::NNUE::AccumulatorStack&  accumulators,
                Eval::NNUE::AccumulatorCaches& caches,

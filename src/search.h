@@ -54,7 +54,7 @@ class ThreadPool;
 class OptionsMap;
 
 namespace Eval::NNUE {
-class Network;
+struct Networks;
 }
 
 namespace Search {
@@ -193,7 +193,7 @@ struct SharedState {
                 ThreadPool&                                              threadPool,
                 TranspositionTable&                                      transpositionTable,
                 std::map<NumaIndex, SharedHistories>&                    sharedHists,
-                const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net) :
+                const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& net) :
         options(optionsMap),
         threads(threadPool),
         tt(transpositionTable),
@@ -203,8 +203,8 @@ struct SharedState {
     const OptionsMap&                                        options;
     ThreadPool&                                              threads;
     TranspositionTable&                                      tt;
-    std::map<NumaIndex, SharedHistories>&                    sharedHistories;
-    const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
+    std::map<NumaIndex, SharedHistories>&                     sharedHistories;
+    const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& network;
 };
 
 class Worker;
@@ -380,10 +380,10 @@ class Worker {
     // The main thread has a SearchManager, the others have a NullSearchManager
     std::unique_ptr<ISearchManager> manager;
 
-    const OptionsMap&                                        options;
-    ThreadPool&                                              threads;
-    TranspositionTable&                                      tt;
-    const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
+    const OptionsMap&                                         options;
+    ThreadPool&                                               threads;
+    TranspositionTable&                                       tt;
+    const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& network;
 
     // Used by NNUE
     Eval::NNUE::AccumulatorStack  accumulatorStack;

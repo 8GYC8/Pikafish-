@@ -59,8 +59,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     numaContext(NumaConfig::from_system(DefaultNumaPolicy, false)),
     states(new std::deque<StateInfo>(1)),
     threads(),
-    networkFile{std::nullopt, ""},
-    network(numaContext, get_default_network()) {
+    networks(numaContext, get_default_networks()) {
 
     pos.set(StartFEN, &states->back());
 
@@ -291,7 +290,7 @@ bool Engine::set_numa_config_from_option(const std::string& o) {
 
 void Engine::resize_threads() {
     threads.wait_for_search_finished();
-    threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, network},
+    threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, networks},
                 updateContext);
 
     // Reallocate the hash with the new threadpool size
@@ -309,10 +308,9 @@ void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }
 // network related
 
 void Engine::verify_network() const {
-    const auto file = path_from_utf8(std::string(options["EvalFile"]));
-    network->verify(onVerifyNetwork, networkFile, file);
+    networks->big.verify(std::string(options["EvalFile"]), onVerifyNetwork);
 
-    auto statuses = network.get_status_and_errors();
+    auto statuses = networks.get_status_and_errors();
     for (usize i = 0; i < statuses.size(); ++i)
     {
         const auto [status, error] = statuses[i];
@@ -343,25 +341,29 @@ void Engine::verify_network() const {
     }
 }
 
-std::unique_ptr<Eval::NNUE::Network> Engine::get_default_network() {
+std::unique_ptr<Eval::NNUE::Networks> Engine::get_default_networks() {
 
-    auto network_ = std::make_unique<NN::Network>();
+    auto networks_ =
+      std::make_unique<NN::Networks>(NN::EvalFile{EvalFileDefaultName, "None", ""});
 
-    network_->load(binaryDirectory, std::filesystem::path{}, networkFile);
+    networks_->big.load(binaryDirectory.string(), "");
 
-    return network_;
+    return networks_;
 }
 
 void Engine::load_network(const std::filesystem::path& file) {
-    network.modify_and_replicate(
-      [this, &file](NN::Network& network_) { network_.load(binaryDirectory, file, networkFile); });
+    networks.modify_and_replicate([this, &file](NN::Networks& networks_) {
+        networks_.big.load(binaryDirectory.string(), file.string());
+    });
     threads.clear();
     threads.ensure_network_replicated();
 }
 
 void Engine::save_network(const std::optional<std::filesystem::path>& file) {
-    network.modify_and_replicate(
-      [&file, this](NN::Network& network_) { network_.save(networkFile, file); });
+    networks.modify_and_replicate([&file](NN::Networks& networks_) {
+        networks_.big.save(file.has_value() ? std::optional<std::string>(file->string())
+                                            : std::nullopt);
+    });
 }
 
 // utility functions
@@ -373,7 +375,7 @@ void Engine::trace_eval() const {
 
     verify_network();
 
-    sync_cout << "\n" << Eval::trace(p, *network) << sync_endl;
+    sync_cout << "\n" << Eval::trace(p, *networks) << sync_endl;
 }
 
 const OptionsMap& Engine::get_options() const { return options; }

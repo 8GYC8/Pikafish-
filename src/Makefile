@@ -500,7 +500,7 @@ ifeq ($(COMP),gcc)
 			LDFLAGS += -m$(bits)
 		endif
 	else ifeq ($(arch),loongarch64)
-		LDFLAGS += -latomic
+		CXXFLAGS += -latomic
 	else ifneq ($(arch),wasm32)
 		CXXFLAGS += -m$(bits)
 		LDFLAGS += -m$(bits)
@@ -571,20 +571,15 @@ ifeq ($(COMP),clang)
 			LDFLAGS += -m$(bits)
 		endif
 	else ifeq ($(arch),loongarch64)
-		LDFLAGS += -latomic
+		CXXFLAGS += -latomic
 	else
 		CXXFLAGS += -m$(bits)
 		LDFLAGS += -m$(bits)
 	endif
 endif
 
-ifneq ($(MACOSX_VERSION_MIN),)
-	mac_target_flags := -mmacosx-version-min=$(MACOSX_VERSION_MIN)
-else
-	mac_target_flags :=
-endif
-
 ifeq ($(TARGET_KERNEL),Darwin)
+	mac_target_flags := -mmacosx-version-min=10.15
 	ifneq ($(arch),any)
 		mac_target_flags += -arch $(arch)
 	endif
@@ -666,7 +661,6 @@ ifeq ($(COMP),gcc)
 		profile_make = clang-profile-make
 		profile_use = clang-profile-use
 	else
-		gccmajorv := $(shell $(CXX) -dumpversion 2>/dev/null)
 		CXXFLAGS += -Wstack-usage=128000 -fno-ipa-cp-clone
 	endif
 else ifeq ($(COMP),mingw)
@@ -953,16 +947,7 @@ ifeq ($(debug),no)
 # GCC on some systems.
 	else ifeq ($(comp),gcc)
 		ifeq ($(gccisclang),)
-			# lto-partition=balanced is much faster on multi-core systems and
-			# has not been observed to reduce performance for gcc > 13.
-			# It is however not compatible with universal builds.
-			ifeq ($(UNIVERSAL_SLICE),true)
-				CXXFLAGS += -flto -flto-partition=one
-			else ifeq ($(shell test "$(gccmajorv)" -le 13 2>/dev/null && echo true),true)
-				CXXFLAGS += -flto -flto-partition=one
-			else
-				CXXFLAGS += -flto -flto-partition=balanced
-			endif
+			CXXFLAGS += -flto -flto-partition=one
 			LDFLAGS += $(CXXFLAGS) -flto=jobserver
 		else
 			CXXFLAGS += -flto=full
@@ -1416,7 +1401,7 @@ else ifeq ($(TARGET_KERNEL),Linux)
 else    # windows
   UNIVERSAL_FINAL_FLAGS += -Wl,--allow-multiple-definition -static
   ifeq ($(COMP),clang)
-    UNIVERSAL_FINAL_FLAGS += -lpthread -fuse-ld=lld
+    UNIVERSAL_FINAL_FLAGS += -lpthread
   endif
 endif
 
@@ -1479,7 +1464,7 @@ $(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
 $(TEMP_DIR)/%/pikafish.o: $(TEMP_DIR)/%/.setup $(NET_SENTINEL)
 	+ENV_CXXFLAGS='$(ENV_CXXFLAGS) $(call arch-cxxflags,$*)' \
 	    $(MAKE) -C $(TEMP_DIR)/$* $(UOBJ_TGT) \
-		        ARCH=$* CXX=$(CXX) COMP=$(COMP) UNIVERSAL_SLICE=true
+	        ARCH=$* CXX=$(CXX) COMP=$(COMP)
 ifeq ($(TARGET_KERNEL),Darwin)
 # Rename the initializer section
 	ld -r -rename_section __DATA __mod_init_func __DATA $(call arch-mac-section,$*) $@ -o $@.tmp

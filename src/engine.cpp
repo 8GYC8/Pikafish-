@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "evaluate.h"
+#include "experience.h"
 #include "misc.h"
 #include "nnue/network.h"
 #include "nnue/nnue_common.h"
@@ -106,14 +107,6 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
     options.add("nodestime", Option(0, 0, 10000));
 
-    options.add("UCI_ShowWDL", Option(false));
-
-    options.add(  //
-      "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
-          load_network(path_from_utf8(std::string(o)));
-          return std::nullopt;
-      }));
-
     options.add(  //
       "Mate Threat Depth", Option(10, 0, 10, [](const Option& o) {
           RuleConfig::mateThreatDepth = int(o);
@@ -143,7 +136,7 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
 
                  // Rule60MaxPly and Sixty Move Rule couplings:
                  // AsianRule and SkyRule default to rule120 with Sixty Move Rule on,
-                 // YitianRule defaults to rule150 with Sixty Move Rule on.
+                 // YitianRule defaults to rule140 with Sixty Move Rule off.
                  if (RuleConfig::repetitionRule == RR::ASIAN
                      || RuleConfig::repetitionRule == RR::SKY)
                  {
@@ -152,8 +145,8 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
                  }
                  else if (RuleConfig::repetitionRule == RR::YITIAN)
                  {
-                     RuleConfig::rule60MaxPly  = 150;
-                     RuleConfig::sixtyMoveRule = true;
+                     RuleConfig::rule60MaxPly  = 140;
+                     RuleConfig::sixtyMoveRule = false;
                  }
 
                  return std::nullopt;
@@ -174,33 +167,62 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
              }));
 
     options.add(  //
-      "Sixty Move Rule", Option(true, [](const Option& o) {
-          RuleConfig::sixtyMoveRule = int(o) != 0;
+      "Sixty Move Rule", Option(false, [](const Option& o) {
+          RuleConfig::sixtyMoveRule =
+            int(o) != 0 && RuleConfig::repetitionRule != RuleConfig::RepetitionRule::YITIAN;
           return std::nullopt;
       }));
 
     options.add(  //
-      "Rule60MaxPly", Option(150, 90, 150, [](const Option& o) {
-          // Adjustable 90-150 (default rule120 for AsianRule/SkyRule, rule150 for YitianRule).
+      "Rule60MaxPly", Option(140, 90, 155, [](const Option& o) {
+          // Adjustable 90-155 (default rule120 for AsianRule/SkyRule, rule140 for YitianRule).
           RuleConfig::rule60MaxPly = int(o);
+          return std::nullopt;
+      }));
+
+    options.add("UCI_ShowWDL", Option(false));
+
+    options.add(  //
+      "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
+          load_network(path_from_utf8(std::string(o)));
+          return std::nullopt;
+      }));
+
+    // Persistent experience learning: the file is resolved relative to the
+    // engine binary directory when a relative path is given, so the setting
+    // is independent of the GUI's working directory.
+    options.add(  //
+      "Experience File", Option("experience.exp", [this](const Option& o) {
+          auto p = path_from_utf8(std::string(o));
+          if (p.is_relative() && !binaryDirectory.empty())
+              p = binaryDirectory / p;
+          Experience::init(p.string());
+          return std::nullopt;
+      }));
+
+    options.add(  //
+      "Experience Learn", Option(true, [](const Option& o) {
+          Experience::set_learning(int(o) != 0);
           return std::nullopt;
       }));
 
     threads.clear();
     threads.ensure_network_replicated();
     resize_threads();
+
+    // Load the default experience file (silently ignored when absent).
+    {
+        auto p = path_from_utf8(std::string(options["Experience File"]));
+        if (p.is_relative() && !binaryDirectory.empty())
+            p = binaryDirectory / p;
+        Experience::init(p.string());
+    }
 }
 
 std::variant<u64, PositionSetError> Engine::perft(const std::string& fen, Depth depth) {
     verify_network();
 
     return Benchmark::perft(fen, depth);
-}
-
-std::pair<bool, Value> Engine::debug_rule_check() {
-    Value result  = VALUE_NONE;
-    bool  terminal = pos.rule_judge(result, 0);
-    return {terminal, result};
 }
 
 void Engine::go(Search::LimitsType& limits) {
@@ -268,12 +290,18 @@ std::optional<PositionSetError> Engine::set_position(const std::string&         
 
 bool Engine::set_numa_config_from_option(const std::string& o) {
     if (o == "auto" || o == "system")
+    {
         numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy));
+    }
     else if (o == "hardware")
+    {
         // Don't respect affinity set in the system.
         numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy, false));
+    }
     else if (o == "none")
+    {
         numaContext.set_numa_config(NumaConfig{});
+    }
     else
     {
         auto parsed = NumaConfig::from_string(o);
@@ -317,16 +345,26 @@ void Engine::verify_network() const {
         const auto [status, error] = statuses[i];
         std::string message        = "Network replica " + std::to_string(i + 1) + ": ";
         if (status == SystemWideSharedConstantAllocationStatus::NoAllocation)
+        {
             message += "No allocation.";
+        }
         else if (status == SystemWideSharedConstantAllocationStatus::LocalMemory)
+        {
             message += "Local memory.";
+        }
         else if (status == SystemWideSharedConstantAllocationStatus::SharedMemory)
+        {
             message += "Shared memory.";
+        }
         else
+        {
             message += "Unknown status.";
+        }
 
         if (error.has_value())
+        {
             message += " " + *error;
+        }
 
         onVerifyNetwork(message);
     }
@@ -369,6 +407,13 @@ const OptionsMap& Engine::get_options() const { return options; }
 OptionsMap&       Engine::get_options() { return options; }
 
 std::string Engine::fen() const { return pos.fen(); }
+
+std::pair<bool, Value> Engine::debug_rule_check() {
+    Value result = VALUE_NONE;
+    bool terminal = pos.rule_judge(result, 0);
+    return {terminal, result};
+}
+
 
 std::optional<PositionSetError> Engine::flip() { return pos.flip(); }
 

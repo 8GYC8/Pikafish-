@@ -25,7 +25,6 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -40,7 +39,6 @@
 
 #include "misc.h"
 #include "shm.h"
-#include "thread_native.h"
 
 // We support linux very well, but we explicitly do NOT support Android,
 // because there is no affected systems, not worth maintaining.
@@ -71,6 +69,9 @@ using SetThreadSelectedCpuSetMasks_t = BOOL (*)(HANDLE, PGROUP_AFFINITY, USHORT)
 using GetThreadSelectedCpuSetMasks_t = BOOL (*)(HANDLE, PGROUP_AFFINITY, USHORT, PUSHORT);
 
 #endif
+
+#include "misc.h"
+#include "thread_native.h"
 
 namespace Stockfish {
 
@@ -155,11 +156,15 @@ inline std::pair<BOOL, std::vector<USHORT>> get_process_group_affinity() {
           GetProcessGroupAffinity(GetCurrentProcess(), &GroupCount, GroupArrayAligned);
 
         if (status == 0 && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        {
             break;
+        }
 
         if (status != 0)
+        {
             return std::make_pair(status,
                                   std::vector(GroupArrayAligned, GroupArrayAligned + GroupCount));
+        }
     }
 
     return std::make_pair(0, std::vector<USHORT>());
@@ -192,7 +197,9 @@ inline WindowsAffinity get_process_affinity() {
         // We expect ERROR_INSUFFICIENT_BUFFER from GetThreadSelectedCpuSetMasks,
         // but other failure is an actual error.
         if (status == 0 && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        {
             affinity.isNewDeterminate = false;
+        }
         else if (RequiredMaskCount > 0)
         {
             // If RequiredMaskCount then these affinities were never set, but it's
@@ -203,7 +210,9 @@ inline WindowsAffinity get_process_affinity() {
                                                     RequiredMaskCount, &RequiredMaskCount);
 
             if (status == 0)
+            {
                 affinity.isNewDeterminate = false;
+            }
             else
             {
                 std::set<CpuIndex> cpus;
@@ -352,7 +361,9 @@ inline WindowsAffinity get_process_affinity() {
                 // or is set to all processors so that we correctly produce as
                 // std::nullopt result.
                 if (!isAffinityFull)
+                {
                     affinity.oldApi = std::move(cpus);
+                }
             });
 
             th.join();
@@ -574,7 +585,9 @@ class NumaConfig {
         {
             usize l3BundleSize = 0;
             if (const auto* v = std::get_if<BundledL3Policy>(&policy))
+            {
                 l3BundleSize = v->bundleSize;
+            }
             if (auto l3Cfg =
                   try_get_l3_aware_config(respectProcessAffinity, l3BundleSize, is_cpu_allowed))
             {
@@ -1051,7 +1064,9 @@ class NumaConfig {
                 if (cfirst.has_value() && clast.has_value() && *clast - *cfirst < MaxIndices)
                 {
                     for (usize c = *cfirst; c <= *clast; ++c)
+                    {
                         indices.emplace_back(c);
+                    }
                 }
             }
         }
@@ -1084,7 +1099,9 @@ class NumaConfig {
         // /sys/devices/system/node/online contains information about active NUMA nodes
         auto nodeIdsStr = read_file_to_string("/sys/devices/system/node/online");
         if (!nodeIdsStr.has_value() || nodeIdsStr->empty())
+        {
             fallback();
+        }
         else
         {
             remove_whitespace(*nodeIdsStr);
@@ -1190,7 +1207,9 @@ class NumaConfig {
                 seenCpus.insert(c);
             }
             if (!domain.cpus.empty())
+            {
                 l3Domains.emplace_back(std::move(domain));
+            }
         }
 
 #elif defined(_WIN64)
@@ -1263,7 +1282,9 @@ class NumaConfig {
             {
                 const NumaIndex dn = n++;
                 for (CpuIndex cpu : d.cpus)
+                {
                     cfg.add_cpu_to_node(dn, cpu);
+                }
             }
         }
         return cfg;

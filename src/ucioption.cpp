@@ -159,12 +159,20 @@ Option& Option::operator=(const std::string& v) {
 
     if (type == "combo")
     {
-        OptionsMap         comboMap;  // To have case insensitive compare
+        // defaultValue stores the complete UCI combo suffix, e.g.
+        // "AsianRule var AsianRule var ChineseRule ...".  Validate against
+        // the actual values while ignoring the repeated UCI "var" markers.
+        bool               found = false;
         std::string        token;
         std::istringstream ss(defaultValue);
         while (ss >> token)
-            comboMap.add(token, Option());
-        if (!comboMap.count(v) || v == "var")
+            if (token != "var" && !CaseInsensitiveLess()(token, v)
+                               && !CaseInsensitiveLess()(v, token))
+            {
+                found = true;
+                break;
+            }
+        if (!found || v == "var")
             return *this;
     }
 

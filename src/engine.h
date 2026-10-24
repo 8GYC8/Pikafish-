@@ -65,9 +65,6 @@ class Engine {
 
     std::variant<u64, PositionSetError> perft(const std::string& fen, Depth depth);
 
-    // rule state debugging for the UCI rulecheck command
-    std::pair<bool, Value> debug_rule_check();
-
     // non blocking call to start searching
     void go(Search::LimitsType&);
     // non blocking call to stop searching
@@ -111,6 +108,7 @@ class Engine {
     int get_hashfull(int maxAge = 0) const;
 
     std::string                          fen() const;
+    std::pair<bool, Value>                debug_rule_check();
     std::optional<PositionSetError>      flip();
     std::string                          visualize() const;
     std::vector<std::pair<usize, usize>> get_bound_thread_count_by_numa_node() const;

@@ -18,7 +18,6 @@
 ****************************************************************/
 #include "debug.h" /* assert */
 #include "bitstream.h"
-#include "bmi2.h"
 #include "compiler.h"
 #define FSE_STATIC_LINKING_ONLY
 #include "fse.h"
@@ -375,8 +374,6 @@ BMI2_TARGET_ATTRIBUTE static size_t FSE_decompress_wksp_body_bmi2(void*       ds
     return FSE_decompress_wksp_body(dst, dstCapacity, cSrc, cSrcSize, maxLog, workSpace, wkspSize,
                                     1);
 }
-    #else
-        #define FSE_decompress_wksp_body_bmi2 FSE_decompress_wksp_body_default
     #endif
 
 size_t FSE_decompress_wksp_bmi2(void*       dst,
@@ -387,11 +384,13 @@ size_t FSE_decompress_wksp_bmi2(void*       dst,
                                 void*       workSpace,
                                 size_t      wkspSize,
                                 int         bmi2) {
-    if (ZSTD_USE_BMI2(bmi2))
+    #if DYNAMIC_BMI2
+    if (bmi2)
     {
         return FSE_decompress_wksp_body_bmi2(dst, dstCapacity, cSrc, cSrcSize, maxLog, workSpace,
                                              wkspSize);
     }
+    #endif
     (void) bmi2;
     return FSE_decompress_wksp_body_default(dst, dstCapacity, cSrc, cSrcSize, maxLog, workSpace,
                                             wkspSize);

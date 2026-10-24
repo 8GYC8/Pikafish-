@@ -91,10 +91,13 @@ class FeatureTransformer {
     static constexpr IndexType InputDimensions       = PsqDimensions + ThreatInputDimensions;
     static constexpr IndexType OutputDimensions      = HalfDimensions;
     static constexpr IndexType ThreatWeightSize      = ThreatInputDimensions * HalfDimensions;
+    static constexpr IndexType ThreatPsqtWeightSize  = ThreatInputDimensions * PSQTBuckets;
 
     using BiasesArray       = std::array<BiasType, HalfDimensions>;
     using WeightArray       = std::array<WeightType, HalfDimensions * PsqDimensions>;
     using ThreatWeightArray = std::array<ThreatWeightType, ThreatWeightSize>;
+    using PsqtWeightArray   = std::array<PSQTWeightType, PSQTBuckets * PsqDimensions>;
+    using ThreatPsqtArray   = std::array<PSQTWeightType, ThreatPsqtWeightSize>;
 
     // Size of forward propagation buffer
     static constexpr usize BufferSize = OutputDimensions * sizeof(OutputType);
@@ -122,26 +125,6 @@ class FeatureTransformer {
 
     static constexpr auto InversePackusEpi16Order = invert_permutation(PackusEpi16Order);
 
-#if defined(USE_PAIRED_WIDENING_ADD)
-    // The int8 weight rows are consumed one full vector register (sizeof(vec_t)
-    // bytes) at a time: unpack{lo,hi}_epi8 interleave the bytes of two rows and
-    // maddubs against a vector of ones sums each pair into an int16 lane. Both
-    // unpacks work within 128-bit lanes, so the int16 results of a chunk come out
-    // with its 8-byte blocks in the order {0, 2, 4, 6, ...} (lo) and {1, 3, 5, 7,
-    // ...} (hi). Storing the 8-byte blocks of every chunk in this order at load
-    // time makes the two output registers hold consecutive accumulator lanes, so
-    // the accumulator layout is unchanged.
-    static constexpr auto WideningPairOrder = []() {
-        constexpr usize              NumBlocks = sizeof(SIMD::vec_t) / 8;
-        std::array<usize, NumBlocks> order{};
-        for (usize i = 0; i < NumBlocks; ++i)
-            order[i] = i % 2 == 0 ? i / 2 : NumBlocks / 2 + i / 2;
-        return order;
-    }();
-
-    static constexpr auto InverseWideningPairOrder = invert_permutation(WideningPairOrder);
-#endif
-
     static constexpr u32 combine_hash(std::initializer_list<u32> hashes) {
         u32 hash = 0;
         for (const auto component_hash : hashes)
@@ -161,28 +144,10 @@ class FeatureTransformer {
     void permute_weights() {
         permute<16>(biases, PackusEpi16Order);
         permute<8>(weights, PackusEpi16Order);
-
         permute<8>(threatWeights, PackusEpi16Order);
-
-#if defined(USE_PAIRED_WIDENING_ADD)
-        // With 128-bit vectors the order is the identity
-        if constexpr (sizeof(SIMD::vec_t) > 16)
-        {
-            permute<8>(weights, WideningPairOrder);
-            permute<8>(threatWeights, WideningPairOrder);
-        }
-#endif
     }
 
     void unpermute_weights() {
-#if defined(USE_PAIRED_WIDENING_ADD)
-        if constexpr (sizeof(SIMD::vec_t) > 16)
-        {
-            permute<8>(weights, InverseWideningPairOrder);
-            permute<8>(threatWeights, InverseWideningPairOrder);
-        }
-#endif
-
         permute<16>(biases, InversePackusEpi16Order);
         permute<8>(weights, InversePackusEpi16Order);
         permute<8>(threatWeights, InversePackusEpi16Order);
@@ -190,11 +155,13 @@ class FeatureTransformer {
 
     // Read network parameters
     bool read_parameters(std::istream& stream) {
-        read_little_endian(stream, biases.data(), HalfDimensions);
+        read_leb_128(stream, biases);
 
         read_little_endian(stream, threatWeights.data(), ThreatWeightSize);
+        read_leb_128(stream, threatPsqtWeights.data(), ThreatPsqtWeightSize);
 
         read_little_endian(stream, weights.data(), weights.size());
+        read_leb_128(stream, psqtWeights);
 
         permute_weights();
 
@@ -207,11 +174,13 @@ class FeatureTransformer {
 
         copy->unpermute_weights();
 
-        write_little_endian(stream, copy->biases.data(), HalfDimensions);
+        write_leb_128<BiasType>(stream, copy->biases);
 
         write_little_endian(stream, copy->threatWeights.data(), ThreatWeightSize);
+        write_leb_128(stream, copy->threatPsqtWeights.data(), ThreatPsqtWeightSize);
 
         write_little_endian(stream, copy->weights.data(), copy->weights.size());
+        write_leb_128<PSQTWeightType>(stream, copy->psqtWeights);
 
         return !stream.fail();
     }
@@ -221,8 +190,10 @@ class FeatureTransformer {
 
         hash_combine(h, get_raw_data_hash(biases));
         hash_combine(h, get_raw_data_hash(weights));
+        hash_combine(h, get_raw_data_hash(psqtWeights));
 
         hash_combine(h, get_raw_data_hash(threatWeights));
+        hash_combine(h, get_raw_data_hash(threatPsqtWeights));
 
         hash_combine(h, get_hash_value());
 
@@ -230,19 +201,27 @@ class FeatureTransformer {
     }
 
     // Convert input features
-    void transform(const Position&                             pos,
-                   AccumulatorStack&                           accumulatorStack,
-                   AccumulatorCaches&                          cache,
-                   OutputType*                                 output,
-                   [[maybe_unused]] NNZInfo<OutputDimensions>& nnzInfo) const {
+    i32 transform(const Position&                             pos,
+                  AccumulatorStack&                           accumulatorStack,
+                  AccumulatorCaches&                          cache,
+                  OutputType*                                 output,
+                  int                                         bucket,
+                  [[maybe_unused]] NNZInfo<OutputDimensions>& nnzInfo) const {
         accumulatorStack.evaluate(pos, *this, cache);
         const auto& accumulatorState = accumulatorStack.latest();
 
-        const Color perspectives[2] = {pos.side_to_move(), ~pos.side_to_move()};
-        const auto& accumulation    = accumulatorState.accumulation;
+        const Color perspectives[2]  = {pos.side_to_move(), ~pos.side_to_move()};
+        const auto& psqtAccumulation = accumulatorState.psqtAccumulation;
+        const auto  psqt =
+          (psqtAccumulation[perspectives[0]][bucket] - psqtAccumulation[perspectives[1]][bucket])
+          / 2;
+
+        const auto& accumulation = accumulatorState.accumulation;
 
         for (IndexType p = 0; p < 2; ++p)
             transform_perspective(accumulation[perspectives[p]], output, p, nnzInfo);
+
+        return psqt;
     }
 
    private:
@@ -297,6 +276,7 @@ class FeatureTransformer {
         // mulhi cuts off the last 16 bits of the resulting product,
         // which is the same as performing a rightward shift of 16 bits.
         // We can use this to our advantage. Recall that we want to
+
         // divide the final product by 512, which is equivalent to a
         // 9-bit right shift. Intuitively, if we shift the clipped
         // value left by 7, and perform mulhi, which shifts the product
@@ -420,6 +400,8 @@ class FeatureTransformer {
     alignas(CacheLineSize) BiasesArray biases;
     alignas(CacheLineSize) WeightArray weights;
     alignas(CacheLineSize) ThreatWeightArray threatWeights;
+    alignas(CacheLineSize) PsqtWeightArray psqtWeights;
+    alignas(CacheLineSize) ThreatPsqtArray threatPsqtWeights;
 };
 
 }  // namespace Stockfish::Eval::NNUE

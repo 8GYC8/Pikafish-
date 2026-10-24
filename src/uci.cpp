@@ -23,18 +23,19 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <fstream>
 #include <iterator>
 #include <optional>
 #include <sstream>
 #include <string_view>
 #include <filesystem>
+#include <fstream>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "benchmark.h"
 #include "engine.h"
+#include "experience.h"
 #include "memory.h"
 #include "movegen.h"
 #include "position.h"
@@ -424,6 +425,11 @@ void UCIEngine::loop() {
         if (token == "quit" || token == "stop")
             engine.stop();
 
+        // On quit, make sure a possibly running search has fully finished
+        // (its result is then stored) before the experience table is saved.
+        if (token == "quit")
+            engine.wait_for_search_finished();
+
         // The GUI sends 'ponderhit' to tell that the user has played the expected move.
         // So, 'ponderhit' is sent if pondering was done on the same move that the user
         // has played. The search should continue, but should also switch from pondering
@@ -457,7 +463,11 @@ void UCIEngine::loop() {
         else if (token == "fen" || token == "startpos")
             is.seekg(0), position(is);
         else if (token == "ucinewgame")
+        {
+            // A new game starts: persist everything learned from the previous one.
+            Experience::save();
             engine.search_clear();
+        }
         else if (token == "isready")
             sync_cout << "readyok" << sync_endl;
 
@@ -510,6 +520,9 @@ void UCIEngine::loop() {
                       << sync_endl;
 
     } while (token != "quit" && cli.argc <= 1);  // The command-line arguments are one-shot
+
+    // Persist learned experience on exit.
+    Experience::save();
 }
 
 Search::LimitsType UCIEngine::parse_limits(std::istream& is) {
@@ -818,6 +831,8 @@ u64 UCIEngine::perft(const Search::LimitsType& limits) {
 }
 
 void UCIEngine::position(std::istringstream& is) {
+    const std::string fullCommand = is.str();
+
     std::string token, fen;
 
     is >> token;
@@ -952,7 +967,7 @@ std::string UCIEngine::to_lower(std::string str) {
 }
 
 Move UCIEngine::to_move(const Position& pos, std::string str) {
-    for (const auto& m : MoveList<ALL>(pos))
+    for (const auto& m : MoveList<LEGAL>(pos))
         if (str == move(m))
             return m;
 

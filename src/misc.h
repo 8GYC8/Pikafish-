@@ -148,10 +148,10 @@ std::filesystem::path path_from_utf8(const std::string& path);
 // Returns std::nullopt if the file does not exist.
 std::optional<std::string> read_file_to_string(const std::string& path);
 
-bool dbg_hit_on(bool cond, int slot = 0);
-i64  dbg_mean_of(i64 value, int slot = 0);
-i64  dbg_stdev_of(i64 value, int slot = 0);
-i64  dbg_extremes_of(i64 value, int slot = 0);
+void dbg_hit_on(bool cond, int slot = 0);
+void dbg_mean_of(i64 value, int slot = 0);
+void dbg_stdev_of(i64 value, int slot = 0);
+void dbg_extremes_of(i64 value, int slot = 0);
 void dbg_correl_of(i64 value1, i64 value2, int slot = 0);
 void dbg_print();
 void dbg_clear();
@@ -522,6 +522,7 @@ struct CommandLine {
     CommandLine& operator=(CommandLine&&)      = default;
 
     static std::filesystem::path get_binary_directory(std::filesystem::path argv0);
+    static std::filesystem::path get_working_directory();
 
     int    argc;
     char** argv;
@@ -540,7 +541,9 @@ void move_to_front(std::vector<T>& vec, Predicate pred) {
     auto it = std::find_if(vec.begin(), vec.end(), pred);
 
     if (it != vec.end())
+    {
         std::rotate(vec.begin(), it, it + 1);
+    }
 }
 }
 

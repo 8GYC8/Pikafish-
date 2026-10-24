@@ -21,6 +21,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <iosfwd>
@@ -34,7 +35,7 @@
 #include "attacks.h"
 #include "bitboard.h"
 #include "misc.h"
-#include "nnue/features/k6r2nc2.h"
+#include "nnue/features/half_ka_v2_hm.h"
 #include "types.h"
 
 namespace Stockfish {
@@ -72,53 +73,8 @@ inline bool chinese_like() {
 
 }  // namespace RuleConfig
 
-class TranspositionTable;
-struct SharedHistories;
-
-// StateInfo struct stores information needed to restore a Position object to
-// its previous state when we retract a move. Whenever a move is made on the
-// board (by calling Position::do_move), a StateInfo object must be passed.
-
-struct StateInfo {
-
-    // Copied when making a move
-    Key   pawnKey;
-    Key   minorPieceKey;
-    Key   nonPawnKey[COLOR_NB];
-    Value majorMaterial[COLOR_NB];
-    i16   check10[COLOR_NB];
-    int   rule60;
-    int   pliesFromNull;
-
-    // Not copied when making a move (will be recomputed anyhow)
-    Key        key;
-    Bitboard   checkersBB;
-    StateInfo* previous;
-    Bitboard   blockersForKing[COLOR_NB];
-    Bitboard   pinners[COLOR_NB];
-    Bitboard   checkSquares[PIECE_TYPE_NB];
-    Bitboard   threats[PIECE_TYPE_NB];
-    Piece      capturedPiece;
-
-    // SkyRule historical move state reconstructed lazily while rolling a
-    // repetition cycle back: victims attacked by the move, identities of
-    // checking pieces, and identities of chasing pieces.
-    u16        skyVictims;
-    u16        skyCheckers;
-    u16        skyChasers;
-    Move       move;
-};
 
 
-// A list to keep track of the position states along the setup moves (from the
-// start position to the position just before the search starts). Needed by
-// 'draw by repetition' detection. Use a std::deque because pointers to
-// elements are not invalidated upon list resizing.
-using StateListPtr = std::unique_ptr<std::deque<StateInfo>>;
-
-// Exact attacker -> victim relation used by SkyRule. Unlike ChaseMap consumers,
-// SkyRule needs to keep the attacker's identity to classify check/chase
-// alternations performed by different pieces.
 struct SkyChaseMap {
     u16 attackers[16]{};
 
@@ -149,6 +105,54 @@ struct SkyChaseMap {
         return ret;
     }
 };
+
+class TranspositionTable;
+struct SharedHistories;
+
+// StateInfo struct stores information needed to restore a Position object to
+// its previous state when we retract a move. Whenever a move is made on the
+// board (by calling Position::do_move), a StateInfo object must be passed.
+
+struct StateInfo {
+
+    // Copied when making a move
+    Key   pawnKey;
+    Key   minorPieceKey;
+    Key   nonPawnKey[COLOR_NB];
+    Value majorMaterial[COLOR_NB];
+    i16   check10[COLOR_NB];
+    int   rule60;
+    int   pliesFromNull;
+
+    // Not copied when making a move (will be recomputed anyhow)
+    Key        key;
+    Bitboard   checkersBB;
+    StateInfo* previous;
+    Bitboard   blockersForKing[COLOR_NB];
+    Bitboard   pinners[COLOR_NB];
+    Bitboard   checkSquares[PIECE_TYPE_NB];
+    bool       needFullCheck;
+    Piece      capturedPiece;
+
+    // SkyRule historical move state reconstructed from the supplied custom binary.
+    // The three u16 masks occupy the padding that precedes Move in the stock layout:
+    // victims attacked by the move, identities of checking pieces, and identities of
+    // chasing pieces. They are filled lazily while rolling a repetition cycle back.
+    u16        skyVictims;
+    u16        skyCheckers;
+    u16        skyChasers;
+    Move       move;
+
+    // Helper used only to keep our stable idBoard synchronized on full undo.
+    int        skyCapturedId;
+};
+
+
+// A list to keep track of the position states along the setup moves (from the
+// start position to the position just before the search starts). Needed by
+// 'draw by repetition' detection. Use a std::deque because pointers to
+// elements are not invalidated upon list resizing.
+using StateListPtr = std::unique_ptr<std::deque<StateInfo>>;
 
 // This error should be used whenever a position is suspected to be unsupported
 // by the engine. In particular positions that may cause hard errors like segmentation fault.
@@ -203,11 +207,12 @@ class Position {
     void     update_blockers() const;
     Bitboard checkers_to(Color c, Square s) const;
     Bitboard checkers_to(Color c, Square s, Bitboard occupied) const;
-    Bitboard xattacks_by(PieceType pt, Color c, Bitboard occupied) const;
-    Bitboard threats_by(PieceType pt) const;
+    template<PieceType Pt>
+    Bitboard attacks_by(Color c) const;
 
     // Properties of moves
     bool  legal(Move m) const;
+    bool  pseudo_legal(const Move m) const;
     bool  capture(Move m) const;
     bool  gives_check(Move m) const;
     Piece moved_piece(Move m) const;
@@ -246,9 +251,9 @@ class Position {
     // chasing the SAME victim across the repetition cycle. This is the core of
     // the "常捉无根子" detector shared by AsianRule, SkyRule and YitianRule.
     ChaseMap chased(Color c);
-    bool     has_mate_threat(Depth d = -1);
-    Value    major_material(Color c) const;
-    Value    major_material() const;
+    bool  has_mate_threat(Depth d = -1);
+    Value major_material(Color c) const;
+    Value major_material() const;
 
     // Position consistency check, for debugging
     bool                            pos_is_ok() const;
@@ -263,8 +268,7 @@ class Position {
    private:
     // Initialization helpers (used while setting up a position)
     void set_state() const;
-    void set_extra_bitboards() const;
-    void compute_threats() const;
+    void set_check_info() const;
 
     // Other helpers
     template<bool ComputeRay = true>
@@ -354,29 +358,17 @@ inline Bitboard Position::checkers_to(Color c, Square s) const {
     return checkers_to(c, s, pieces());
 }
 
-// Includes X-ray attacks through the king of color ~c.
-inline Bitboard Position::xattacks_by(PieceType pt, Color c, Bitboard occupied) const {
+template<PieceType Pt>
+inline Bitboard Position::attacks_by(Color c) const {
 
     Bitboard threats   = 0;
-    Bitboard attackers = pieces(c, pt);
+    Bitboard attackers = pieces(c, Pt);
     while (attackers)
-    {
-        Square s = pop_lsb(attackers);
-        if (pt == PAWN)
-            threats |= Attacks::attacks_bb(PAWN, s, c);
-        else if (pt == KING)
-            threats |=
-              Attacks::attacks_bb(KING, s) | (Attacks::attacks_bb(ROOK, s, occupied) & file_bb(s));
+        if (Pt == PAWN)
+            threats |= Attacks::attacks_bb<PAWN>(pop_lsb(attackers), c);
         else
-            threats |= Attacks::attacks_bb(pt, s, occupied);
-    }
+            threats |= Attacks::attacks_bb<Pt>(pop_lsb(attackers), pieces());
     return threats;
-}
-
-inline Bitboard Position::threats_by(PieceType pt) const {
-    if (!st->threats[ALL_PIECES])
-        compute_threats();
-    return st->threats[pt];
 }
 
 inline Bitboard Position::checkers() const { return st->checkersBB; }
@@ -425,7 +417,7 @@ inline void Position::put_piece(Piece pc, Square s, DirtyThreats* const dts) {
     byColorBB[color_of(pc)] |= s;
     pieceCount[pc]++;
     pieceCount[make_piece(color_of(pc), ALL_PIECES)]++;
-    midEncoding[color_of(pc)] += Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][s];
+    midEncoding[color_of(pc)] += Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][s];
 
     if (dts)
         update_piece_threats(pc, true, s, dts);
@@ -444,7 +436,7 @@ inline void Position::remove_piece(Square s, DirtyThreats* const dts) {
     board[s] = NO_PIECE;
     pieceCount[pc]--;
     pieceCount[make_piece(color_of(pc), ALL_PIECES)]--;
-    midEncoding[color_of(pc)] -= Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][s];
+    midEncoding[color_of(pc)] -= Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][s];
 }
 
 inline void Position::move_piece(Square from, Square to, DirtyThreats* const dts) {
@@ -460,8 +452,8 @@ inline void Position::move_piece(Square from, Square to, DirtyThreats* const dts
     byColorBB[color_of(pc)] ^= fromTo;
     board[from] = NO_PIECE;
     board[to]   = pc;
-    midEncoding[color_of(pc)] -= Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][from];
-    midEncoding[color_of(pc)] += Eval::NNUE::Features::K6R2NC2::MidMirrorEncoding[pc][to];
+    midEncoding[color_of(pc)] -= Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][from];
+    midEncoding[color_of(pc)] += Eval::NNUE::Features::HalfKAv2_hm::MidMirrorEncoding[pc][to];
 
     if (dts)
         update_piece_threats(pc, true, to, dts);

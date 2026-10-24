@@ -48,6 +48,9 @@ struct EvalFile {
 };
 
 struct NnueEvalTrace {
+    static_assert(LayerStacks == PSQTBuckets);
+
+    Value psqt[LayerStacks];
     Value positional[LayerStacks];
     usize correctBucket;
 };

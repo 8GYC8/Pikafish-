@@ -206,6 +206,10 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
           return std::nullopt;
       }));
 
+    // Replay the move of an entry studied offline (written with bound "book")
+    // when that position occurs at the root. See Experience::Entry::book.
+    options.add("Experience Book", Option(true));
+
     threads.clear();
     threads.ensure_network_replicated();
     resize_threads();

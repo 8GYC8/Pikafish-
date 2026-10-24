@@ -312,6 +312,26 @@ bool Search::Worker::iterative_deepening() {
             mainThread->iterValue.fill(mainThread->bestPreviousScore);
     }
 
+    // Experience book: an entry flagged "book" was written by offline study of
+    // games actually played. It replaces the root move list, so the engine
+    // replays the studied move instead of re-deriving one from its own slower
+    // (and possibly blind) evaluation.
+    if (options["Experience Book"])
+        if (const Experience::Entry* exp = Experience::probe(rootPos.key()))
+            if (exp->book && exp->move != Move::none())
+            {
+                const auto it = std::find_if(rootMoves.begin(), rootMoves.end(),
+                                             [&](const auto& rm) {
+                                                 return !rm.pv.empty() && rm.pv[0] == exp->move;
+                                             });
+                if (it != rootMoves.end() && rootMoves.size() > 1)
+                {
+                    const auto bookMove = *it;
+                    rootMoves.clear();
+                    rootMoves.push_back(bookMove);
+                }
+            }
+
     usize multiPV = usize(options["MultiPV"]);
 
     multiPV = std::min(multiPV, rootMoves.size());

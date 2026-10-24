@@ -40,8 +40,10 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b + 1);
 }
 
-std::string bound_to_string(Bound b) {
-    return b == BOUND_EXACT ? "exact" : b == BOUND_LOWER ? "lower" : "upper";
+std::string bound_to_string(const Entry& e) {
+    if (e.book)
+        return "book";
+    return e.bound == BOUND_EXACT ? "exact" : e.bound == BOUND_LOWER ? "lower" : "upper";
 }
 
 Bound bound_from_string(const std::string& s) {
@@ -100,6 +102,7 @@ void init(const std::string& p) {
         e.value = Value(score);
         e.depth = Depth(depth);
         e.bound = bound_from_string(trim(boundStr));
+        e.book  = trim(boundStr) == "book";
         e.fen   = fen;
         table[pos.key()] = e;
     }
@@ -126,10 +129,11 @@ void save() {
         std::ofstream out(tmp, std::ios::trunc);
         if (!out)
             return;
-        out << "# Pikafish experience file: <fen> | <move> | <score-cp> | <depth> | <bound>\n";
+        out << "# Pikafish experience file: <fen> | <move> | <score-cp> | <depth> | <bound>\n"
+            << "# bound 'book' = play this move at the root (learned from studied games)\n";
         for (const auto& [key, e] : table)
             out << e.fen << " | " << UCIEngine::move(e.move) << " | " << int(e.value) << " | "
-                << int(e.depth) << " | " << bound_to_string(e.bound) << "\n";
+                << int(e.depth) << " | " << bound_to_string(e) << "\n";
     }
     std::remove(path.c_str());
     std::rename(tmp.c_str(), path.c_str());
@@ -153,7 +157,7 @@ void store(const std::string& fen, Key key, Move m, Value v, Depth d, Bound b) {
     if (it != table.end() && it->second.depth > d)
         return;  // keep deeper knowledge
 
-    table[key] = Entry{m, v, d, b, fen};
+    table[key] = Entry{m, v, d, b, false, fen};
 }
 
 std::size_t size() { return table.size(); }

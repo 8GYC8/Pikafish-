@@ -39,7 +39,8 @@ struct Entry {
     Value       value;  // centipawn score, side-to-move perspective, never a mate score
     Depth       depth;
     Bound       bound;
-    std::string fen;  // kept to be able to save the table back to disk
+    bool        book;   // bound written as "book": play this move at the root
+    std::string fen;    // kept to be able to save the table back to disk
 };
 
 void init(const std::string& path);  // (re)load the experience file
